@@ -76,14 +76,16 @@ fn xor_decrypt(nonce: &[u8], pwd: &[u8], input: &[u8]) -> Result<Vec<u8>, Errors
     }
 }
 
-fn mix_blocks(data: &mut Vec<u8>, nonce: &[u8]) -> Result<Vec<u8>, Errors> {
+fn mix_blocks(data: &mut Vec<u8>, nonce: &[u8], pwd: &[u8]) -> Result<Vec<u8>, Errors> {
+    let nonce = blake3::hash(&[nonce, pwd].concat());
+    let nonce = nonce.as_bytes();
     let thread = num_cpus::get() / 2;
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(thread)
         .build()
         .map_err(|e| Errors::ThreadPool(e.to_string()))?;
 
-    if data.len() < 3 {
+    if data.len().ct_eq(&3).unwrap_u8() == 1 {
         return Ok(data.to_vec());
     }
 
@@ -106,14 +108,16 @@ fn mix_blocks(data: &mut Vec<u8>, nonce: &[u8]) -> Result<Vec<u8>, Errors> {
     Ok(pool)
 }
 
-fn unmix_blocks(data: &mut Vec<u8>, nonce: &[u8]) -> Result<Vec<u8>, Errors> {
+fn unmix_blocks(data: &mut Vec<u8>, nonce: &[u8], pwd: &[u8]) -> Result<Vec<u8>, Errors> {
+    let nonce = blake3::hash(&[nonce, pwd].concat());
+    let nonce = nonce.as_bytes();
     let thread = num_cpus::get() / 2;
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(thread)
         .build()
         .map_err(|e| Errors::ThreadPool(e.to_string()))?;
 
-    if data.len() < 3 {
+    if data.len().ct_eq(&3).unwrap_u8() == 1 {
         return Ok(data.to_vec());
     }
 
@@ -137,6 +141,12 @@ fn unmix_blocks(data: &mut Vec<u8>, nonce: &[u8]) -> Result<Vec<u8>, Errors> {
 }
 
 fn derive_password_key(pwd: &[u8], salt: &[u8]) -> Result<Vec<u8>, Errors> {
+    if pwd.len().ct_eq(&32).unwrap_u8() != 1 {
+        return Err(Errors::Argon2Failed(
+            "Password has to be at least 32byte".to_string(),
+        ));
+    }
+
     let salt = SaltString::encode_b64(salt).map_err(|e| Errors::Argon2Failed(e.to_string()))?;
     let argon = Argon2::default();
 
@@ -184,8 +194,10 @@ fn generate_dynamic_sbox(nonce: &[u8], key: &[u8]) -> [u8; 256] {
 }
 
 fn in_s_bytes(data: &[u8], nonce: &[u8], pwd: &[u8]) -> Vec<u8> {
-    let sbox = generate_dynamic_sbox(nonce, pwd); // Generate the sbox
+    let mut sbox = generate_dynamic_sbox(nonce, pwd); // Generate the sbox
     let inv_sbox = generate_inv_s_box(&sbox); // Generate the inverse sbox
+
+    sbox.zeroize();
 
     data.par_iter().map(|b| inv_sbox[*b as usize]).collect() // Inverse the sbox
 }
@@ -194,7 +206,7 @@ fn s_bytes(data: &[u8], sbox: &[u8; 256]) -> Vec<u8> {
     data.par_iter().map(|b| sbox[*b as usize]).collect() // Apply the sbox
 }
 
-fn dynamic_sizes(data_len: u64) -> u32 {
+fn dynamic_sizes(data_len: usize) -> u32 {
     match data_len {
         0..1_000 => 14,
         1_000..10_000 => 24,
@@ -223,7 +235,7 @@ fn get_chunk_sizes(data_len: usize, nonce: &[u8], key: &[u8]) -> Vec<usize> {
     let hash = blake3::hash(&[nonce, key].concat());
     let seed = hash.as_bytes();
 
-    let data_size = dynamic_sizes(data_len as u64) as usize;
+    let data_size = dynamic_sizes(data_len) as usize;
 
     while pos < data_len {
         let size = 4 + (seed[pos % seed.len()] as usize % data_size); // Generate a random size for the chunk
@@ -301,7 +313,7 @@ pub fn encrypt(pwd: &str, data: &[u8], nonce: &[u8]) -> Result<Vec<u8>, Errors> 
     out_vec.extend(encrypted_version);
 
     let mut s_block = generate_dynamic_sbox(nonce, &pwd);
-    let mut mixed_data = mix_blocks(&mut s_bytes(data, &s_block), nonce)?;
+    let mut mixed_data = mix_blocks(&mut s_bytes(data, &s_block), nonce, &pwd)?;
 
     s_block.zeroize();
 
@@ -310,10 +322,12 @@ pub fn encrypt(pwd: &str, data: &[u8], nonce: &[u8]) -> Result<Vec<u8>, Errors> 
     mixed_data.zeroize();
 
     let crypted = shifted_data
-        .par_chunks(dynamic_sizes(shifted_data.len() as u64) as usize)
+        .par_chunks(dynamic_sizes(shifted_data.len()) as usize)
         .map(|data: &[u8]| {
-            xor_encrypt(nonce, &pwd, &data).unwrap_or_else(|e| panic!("XOR Encryption Error: {e}"))
+            xor_encrypt(nonce, &pwd, &data).map_err(|e| Errors::InvalidXor(e.to_string()))
         })
+        .collect::<Result<Vec<Vec<u8>>, Errors>>()?
+        .into_iter()
         .flatten()
         .collect::<Vec<u8>>();
 
@@ -365,10 +379,12 @@ pub fn decrypt(pwd: &str, data: &[u8], nonce: &[u8]) -> Result<Vec<u8>, Errors> 
 
     let mut xor_decrypted = crypted
         .to_vec()
-        .par_chunks_mut(dynamic_sizes(crypted.len() as u64) as usize)
+        .par_chunks_mut(dynamic_sizes(crypted.len()) as usize)
         .map(|data: &mut [u8]| {
-            xor_decrypt(nonce, &pwd, data).unwrap_or_else(|e| panic!("XOR Decryption Error: {e}"))
+            xor_decrypt(nonce, &pwd, data).map_err(|e| Errors::InvalidXor(e.to_string()))
         })
+        .collect::<Result<Vec<Vec<u8>>, Errors>>()?
+        .into_iter()
         .flatten()
         .collect::<Vec<u8>>();
 
@@ -376,7 +392,10 @@ pub fn decrypt(pwd: &str, data: &[u8], nonce: &[u8]) -> Result<Vec<u8>, Errors> 
 
     xor_decrypted.zeroize();
 
-    let mut unmixed = unmix_blocks(&mut unshifted, nonce)?;
+    let mut unmixed = unmix_blocks(&mut unshifted, nonce, &pwd)?;
+
+    unshifted.zeroize();
+
     let mut decrypted_data = in_s_bytes(&unmixed, nonce, &pwd);
 
     unmixed.zeroize();
