@@ -142,9 +142,7 @@ fn unmix_blocks(data: &mut Vec<u8>, nonce: &[u8], pwd: &[u8]) -> Result<Vec<u8>,
 
 fn derive_password_key(pwd: &[u8], salt: &[u8]) -> Result<Vec<u8>, Errors> {
     if pwd.len().ct_eq(&32).unwrap_u8() != 1 {
-        return Err(Errors::Argon2Failed(
-            "Password has to be at least 32byte".to_string(),
-        ));
+        return Err(Errors::Argon2Failed("Invalid Password".to_string()));
     }
 
     let salt = SaltString::encode_b64(salt).map_err(|e| Errors::Argon2Failed(e.to_string()))?;
