@@ -5,7 +5,6 @@ use rayon::prelude::*;
 use subtle::ConstantTimeEq;
 use thiserror::Error;
 use zeroize::Zeroize;
-
 static VERSION: &[u8] = b"atom-version:0x1";
 
 #[derive(Debug, Error)]
@@ -269,10 +268,12 @@ fn dynamic_chunk_shift(data: &[u8], nonce: &[u8], password: &[u8]) -> Vec<u8> {
         cursor += size; // Move the cursor to the next chunk
     }
 
+    shifted = shifted.iter().rev().cloned().collect::<Vec<u8>>();
     shifted
 }
 
 fn dynamic_chunk_unshift(data: &[u8], nonce: &[u8], password: &[u8]) -> Vec<u8> {
+    let data = data.iter().rev().cloned().collect::<Vec<u8>>();
     let key = blake3::hash(&[nonce, password].concat())
         .as_bytes()
         .to_vec();
@@ -312,11 +313,9 @@ pub fn encrypt(pwd: &str, data: &[u8], nonce: &[u8]) -> Result<Vec<u8>, Errors> 
 
     let mut s_block = generate_dynamic_sbox(nonce, &pwd);
     let mut mixed_data = mix_blocks(&mut s_bytes(data, &s_block), nonce, &pwd)?;
+    let mut shifted_data = s_bytes(&dynamic_chunk_shift(&mixed_data, nonce, &pwd), &s_block);
 
     s_block.zeroize();
-
-    let mut shifted_data = dynamic_chunk_shift(&mixed_data, nonce, &pwd);
-
     mixed_data.zeroize();
 
     let crypted = shifted_data
@@ -358,9 +357,7 @@ pub fn decrypt(pwd: &str, data: &[u8], nonce: &[u8]) -> Result<Vec<u8>, Errors> 
 
     expected_password.zeroize();
 
-    let total_len = data.len();
-    if total_len < 32 + VERSION.len() {
-        // MAC + versiyon uzunluğu
+    if data.len() < 32 + VERSION.len() {
         return Err(Errors::InvalidMac("Data is too short".to_string()));
     }
 
@@ -386,7 +383,8 @@ pub fn decrypt(pwd: &str, data: &[u8], nonce: &[u8]) -> Result<Vec<u8>, Errors> 
         .flatten()
         .collect::<Vec<u8>>();
 
-    let mut unshifted = dynamic_chunk_unshift(&xor_decrypted, nonce, &pwd);
+    let mut unshifted =
+        dynamic_chunk_unshift(&in_s_bytes(&xor_decrypted, nonce, &pwd), nonce, &pwd);
 
     xor_decrypted.zeroize();
 
