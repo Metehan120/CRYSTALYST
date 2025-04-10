@@ -1,73 +1,90 @@
-# AtomCrypte
+## Security Disclaimer
 
-> **Warning:** AtomCrypte is a work-in-progress experimental encryption algorithm. It is **not** intended for production use, and has not undergone formal cryptanalysis or external security auditing. Use at your own risk.
+While this implementation incorporates multiple security techniques, no custom cryptographic implementation should be used in production without thorough review by security experts. The algorithm has not undergone formal cryptanalysis or standardization.
+
+# Atom Encryption
+
+A high-security, potentially post-quantum resistant encryption implementation in Rust.
 
 ## Overview
 
-AtomCrypte is a custom symmetric encryption algorithm built with multiple transformation layers, memory safety, and obfuscation-focused design. It is implemented in Rust and designed to explore layered cryptographic techniques such as dynamic S-box substitution, chunk-level mutations, Argon2-based key derivation, and authenticated encryption.
-
-The goal of AtomCrypte is to serve as a research and educational platform for cryptographic design, rather than a direct replacement for established algorithms such as AES or ChaCha20.
-
----
+Atom Encryption is a multi-layered encryption system that employs multiple transformations, dynamic S-boxes, and parallel processing to create a robust cryptographic solution. The algorithm combines several techniques to potentially resist both classical and quantum attacks.
 
 ## Features
 
-- 🔒 Memory-hard password-based key derivation using **Argon2**
-- 🔀 Non-linear **S-box transformation** unique to each key/nonce pair
-- 🧩 **Chunk-based rotation and XOR obfuscation**
-- ⚡ **Parallel encryption** using the `rayon` crate
-- 🔐 **MAC authentication** using keyed **BLAKE3**
-- 🧼 Secure memory cleanup with `zeroize`
-- 📦 Constant-time key and MAC verification via `subtle`
+- **Multiple Security Layers**: XOR-based encryption, dynamic S-boxes, block mixing, and data reversal
+- **Strong Cryptographic Primitives**: Blake3 hashing, Argon2 key derivation, and MAC authentication
+- **Memory Safety**: All sensitive data is zeroed after use
+- **Side-Channel Protection**: Constant-time comparisons for critical operations
+- **Performance Optimized**: Parallel processing with Rayon for high throughput
+- **Dynamic Processing**: Chunk sizes adjusted based on data length for optimal performance
+- **Potential Post-Quantum Resistance**: Multiple independent security layers may provide resistance against quantum attacks
 
----
+## Security Considerations
 
-## Warning
+The security of this implementation relies on:
 
-AtomCrypte is experimental. It has **not** been vetted by security professionals, and no formal proof of security is available. There may be flaws or weaknesses in both the algorithmic design and implementation.
+- 256-bit encryption keys
+- 32-byte random nonces
+- Multiple transformation layers (XOR, rotate, add, S-box, chunk mixing)
+- Data reversal operations for enhanced entropy
+- MAC authentication for integrity verification
 
-Do **not** use AtomCrypte to protect sensitive or real-world data.
+## Usage
 
-This project is for:
-- Educational use
-- Cryptographic prototyping
-- Obfuscation research
-- Personal experimentation
+```rust
+use atom_encryption::{encrypt, decrypt, nonce};
 
----
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Generate a secure nonce
+    let nonce_value = nonce()?;
+    
+    // Encrypt some data
+    let password = "YourVeryStrongPasswordHere";
+    let data = b"Secret message to encrypt";
+    let encrypted = encrypt(password, data, &nonce_value)?;
+    
+    // Decrypt the data
+    let decrypted = decrypt(password, &encrypted, &nonce_value)?;
+    assert_eq!(data, &decrypted[..]);
+    
+    Ok(())
+}
+```
 
-## Security Assumptions
+## Advanced Security
 
-- Secrecy depends entirely on the strength of the password and the uniqueness of the nonce.
-- Replay attacks must be mitigated at a higher protocol level.
-- The algorithm assumes a Dolev-Yao style attacker (has full access to messages and source code).
-- Cryptographic primitives used (Argon2, Blake3) are assumed secure.
+For maximum security, consider:
+- Storing the nonce on a separate system from the encrypted data
+- Using a password of appropriate entropy (the system requires a 32-byte key after derivation)
+- Implementing secure key management practices
 
----
+## Technical Details
 
-## How It Works
+The encryption process follows these steps:
 
-Encryption process includes:
-1. Key derivation using `derive_key` + Argon2
-2. Version tag encryption and inclusion
-3. Dynamic S-box creation and substitution
-4. Block mixing using nonce-based transformations
-5. Chunk-level data mutation (rotation + XOR)
-6. XOR-based encryption with nonce/password stream
-7. MAC generation for integrity
+1. Password key derivation using Argon2 and Blake3
+2. Version information encryption
+3. Data transformation through dynamic S-boxes
+4. Block mixing with rotation and XOR operations
+5. Chunk-based processing with dynamic sizing
+6. Data reversal for additional security
+7. Final XOR encryption pass
+8. MAC generation for authentication
 
-Decryption reverses the above steps and verifies both version and MAC tags before revealing data.
+The decryption process reverses these steps in the correct order to recover the original data.
 
----
+## Dependencies
 
-## Disclaimer
-
-AtomCrypte is provided “as-is” for academic and experimental purposes.  
-The author makes no guarantees regarding its security, correctness, or fitness for any purpose.  
-You are solely responsible for how you use this code.
-
----
+- `argon2`: For secure password hashing
+- `blake3`: For fast cryptographic hashing
+- `rand`: For secure random number generation
+- `rayon`: For parallel processing
+- `subtle`: For constant-time equality comparison
+- `thiserror`: For error handling
+- `zeroize`: For secure memory cleanup
+- `num_cpus`: For optimal thread management
 
 ## License
 
-MIT License. See `LICENSE` file for details.
+MIT License. See [`LICENSE`](LICENSE) file for details
