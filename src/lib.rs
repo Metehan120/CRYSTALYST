@@ -7,6 +7,16 @@ use thiserror::Error;
 use zeroize::Zeroize;
 static VERSION: &[u8] = b"atom-version:0x1";
 
+pub struct Nonce;
+pub struct AtomCrypte;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum NonceData {
+    TaggedNonce([u8; 32]),
+    HashedNonce([u8; 32]),
+    Nonce([u8; 32]),
+}
+
 #[derive(Debug, Error)]
 pub enum Errors {
     #[error("Decryption failed: {0}")]
@@ -23,13 +33,98 @@ pub enum Errors {
     InvalidAlgorithm,
 }
 
-pub fn nonce() -> Result<[u8; 32], Errors> {
-    let mut nonce = [0u8; 32];
-    OsRng
-        .try_fill_bytes(&mut nonce)
-        .map_err(|e| Errors::InvalidNonce(e.to_string()))?; // Generate a 32 byte nonce using OsRng
+impl NonceData {
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        match self {
+            NonceData::Nonce(n) | NonceData::HashedNonce(n) | NonceData::TaggedNonce(n) => n,
+        }
+    }
+    pub fn to_vec(&self) -> Vec<u8> {
+        match self {
+            NonceData::Nonce(n) | NonceData::HashedNonce(n) | NonceData::TaggedNonce(n) => {
+                n.to_vec()
+            }
+        }
+    }
+}
 
-    Ok(*blake3::hash(&nonce).as_bytes()) // Hash the nonce to get a 32 byte more random nonce (Extra Security)
+pub trait AsNonce {
+    fn as_nonce(&self) -> Result<NonceData, Errors>;
+}
+
+impl TryFrom<&[u8]> for NonceData {
+    type Error = Errors;
+
+    fn try_from(slice: &[u8]) -> Result<Self, Self::Error> {
+        if slice.len() != 32 {
+            return Err(Errors::InvalidNonce(
+                "Nonce must be exactly 32 bytes".to_string(),
+            ));
+        }
+
+        let mut nonce = [0u8; 32];
+        nonce.copy_from_slice(slice);
+        Ok(NonceData::Nonce(nonce))
+    }
+}
+
+impl TryFrom<Vec<u8>> for NonceData {
+    type Error = Errors;
+
+    fn try_from(vec: Vec<u8>) -> Result<Self, Self::Error> {
+        if vec.len() != 32 {
+            return Err(Errors::InvalidNonce(
+                "Nonce must be exactly 32 bytes".to_string(),
+            ));
+        }
+
+        let mut nonce = [0u8; 32];
+        nonce.copy_from_slice(&vec);
+        Ok(NonceData::Nonce(nonce))
+    }
+}
+
+impl AsNonce for [u8] {
+    fn as_nonce(&self) -> Result<NonceData, Errors> {
+        NonceData::try_from(self)
+    }
+}
+
+impl AsNonce for Vec<u8> {
+    fn as_nonce(&self) -> Result<NonceData, Errors> {
+        NonceData::try_from(self.as_slice())
+    }
+}
+
+impl Nonce {
+    pub fn hashed_nonce() -> Result<NonceData, Errors> {
+        let mut nonce = [0u8; 32];
+        OsRng
+            .try_fill_bytes(&mut nonce)
+            .map_err(|e| Errors::InvalidNonce(e.to_string()))?; // Generate a 32 byte nonce using OsRng
+
+        Ok(NonceData::HashedNonce(*blake3::hash(&nonce).as_bytes())) // Hash the nonce to get a 32 byte more random nonce (Extra Security)
+    }
+
+    pub fn tagged_nonce(tag: &[u8]) -> Result<NonceData, Errors> {
+        let mut nonce = [0u8; 32];
+        OsRng
+            .try_fill_bytes(&mut nonce)
+            .map_err(|e| Errors::InvalidNonce(e.to_string()))?; // Generate a 32 byte nonce using OsRng
+
+        Ok(NonceData::TaggedNonce(
+            *blake3::hash(&[&nonce, tag].concat()).as_bytes(),
+        )) // Hash the nonce to get a 32 byte more random nonce (Extra Security)
+    }
+
+    pub fn nonce() -> Result<NonceData, Errors> {
+        let mut nonce = [0u8; 32];
+        OsRng
+            .try_fill_bytes(&mut nonce)
+            .map_err(|e| Errors::InvalidNonce(e.to_string()))?; // Generate a 32 byte nonce using OsRng
+
+        Ok(NonceData::Nonce(nonce)) // Return the nonce
+    }
 }
 
 fn xor_encrypt(nonce: &[u8], pwd: &[u8], input: &[u8]) -> Result<Vec<u8>, Errors> {
@@ -300,114 +395,122 @@ fn dynamic_chunk_unshift(data: &[u8], nonce: &[u8], password: &[u8]) -> Vec<u8> 
     original
 }
 
-pub fn encrypt(pwd: &str, data: &[u8], nonce: &[u8]) -> Result<Vec<u8>, Errors> {
-    let mut password = derive_key(pwd, nonce);
-    let mut pwd = derive_password_key(&password, nonce)?;
+impl AtomCrypte {
+    pub fn encrypt(pwd: &str, data: &[u8], nonce: NonceData) -> Result<Vec<u8>, Errors> {
+        let nonce = nonce.as_bytes();
 
-    password.zeroize();
+        let mut password = derive_key(pwd, nonce);
+        let mut pwd = derive_password_key(&password, nonce)?;
 
-    let mut out_vec = Vec::new();
+        password.zeroize();
 
-    let encrypted_version = xor_encrypt(nonce, &pwd, VERSION)?;
-    out_vec.extend(encrypted_version);
+        let mut out_vec = Vec::new();
 
-    let mut s_block = generate_dynamic_sbox(nonce, &pwd);
-    let mut mixed_data = mix_blocks(&mut s_bytes(data, &s_block), nonce, &pwd)?;
-    let mut shifted_data = s_bytes(&dynamic_chunk_shift(&mixed_data, nonce, &pwd), &s_block);
+        let encrypted_version = xor_encrypt(nonce, &pwd, VERSION)?;
+        out_vec.extend(encrypted_version);
 
-    s_block.zeroize();
-    mixed_data.zeroize();
+        let mut s_block = generate_dynamic_sbox(nonce, &pwd);
+        let mut mixed_data = mix_blocks(&mut s_bytes(data, &s_block), nonce, &pwd)?;
+        let mut shifted_data = s_bytes(&dynamic_chunk_shift(&mixed_data, nonce, &pwd), &s_block);
 
-    let crypted = shifted_data
-        .par_chunks(dynamic_sizes(shifted_data.len()) as usize)
-        .map(|data: &[u8]| {
-            xor_encrypt(nonce, &pwd, &data).map_err(|e| Errors::InvalidXor(e.to_string()))
-        })
-        .collect::<Result<Vec<Vec<u8>>, Errors>>()?
-        .into_iter()
-        .flatten()
-        .collect::<Vec<u8>>();
+        s_block.zeroize();
+        mixed_data.zeroize();
 
-    shifted_data.zeroize();
+        let crypted = shifted_data
+            .par_chunks(dynamic_sizes(shifted_data.len()) as usize)
+            .map(|data: &[u8]| {
+                xor_encrypt(nonce, &pwd, &data).map_err(|e| Errors::InvalidXor(e.to_string()))
+            })
+            .collect::<Result<Vec<Vec<u8>>, Errors>>()?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<u8>>();
 
-    let mac = *blake3::keyed_hash(
-        blake3::hash(&crypted).as_bytes(),
-        &xor_encrypt(nonce, &pwd, &data)?,
-    )
-    .as_bytes(); // Generate a MAC for the data
+        shifted_data.zeroize();
 
-    pwd.zeroize();
+        let mac = *blake3::keyed_hash(
+            blake3::hash(&crypted).as_bytes(),
+            &xor_encrypt(nonce, &pwd, &data)?,
+        )
+        .as_bytes(); // Generate a MAC for the data
 
-    out_vec.extend(crypted);
-    out_vec.extend(mac);
-
-    Ok(out_vec)
-}
-
-pub fn decrypt(pwd: &str, data: &[u8], nonce: &[u8]) -> Result<Vec<u8>, Errors> {
-    let password: [u8; 32] = derive_key(pwd, nonce);
-    let mut expected_password = derive_password_key(&derive_key(pwd, nonce), nonce)?;
-    let mut pwd = derive_password_key(&password, nonce)?;
-
-    if !verify_keys_constant_time(&pwd, &expected_password)? {
         pwd.zeroize();
+
+        out_vec.extend(crypted);
+        out_vec.extend(mac);
+
+        Ok(out_vec)
+    }
+
+    pub fn decrypt(pwd: &str, data: &[u8], nonce: NonceData) -> Result<Vec<u8>, Errors> {
+        let nonce = nonce.as_bytes();
+
+        let password: [u8; 32] = derive_key(pwd, nonce);
+        let mut expected_password = derive_password_key(&derive_key(pwd, nonce), nonce)?;
+        let mut pwd = derive_password_key(&password, nonce)?;
+
+        if !verify_keys_constant_time(&pwd, &expected_password)? {
+            pwd.zeroize();
+            expected_password.zeroize();
+            return Err(Errors::InvalidMac("Invalid key".to_string()));
+        }
+
         expected_password.zeroize();
-        return Err(Errors::InvalidMac("Invalid key".to_string()));
-    }
 
-    expected_password.zeroize();
+        if data.len() < 32 + VERSION.len() {
+            return Err(Errors::InvalidMac("Data is too short".to_string()));
+        }
 
-    if data.len() < 32 + VERSION.len() {
-        return Err(Errors::InvalidMac("Data is too short".to_string()));
-    }
+        let version_len = VERSION.len();
+        let (encrypted_version, rest) = data.split_at(version_len);
+        let (crypted, mac_key) = rest.split_at(rest.len() - 32);
 
-    let version_len = VERSION.len();
-    let (encrypted_version, rest) = data.split_at(version_len);
-    let (crypted, mac_key) = rest.split_at(rest.len() - 32);
+        {
+            let version = xor_decrypt(nonce, &pwd, encrypted_version)?;
 
-    let version = xor_decrypt(nonce, &pwd, encrypted_version)?;
+            if !version.starts_with(b"atom-version") {
+                pwd.zeroize();
+                return Err(Errors::InvalidAlgorithm);
+            }
+        }
 
-    if !version.starts_with(b"atom-version") {
+        let mut xor_decrypted = crypted
+            .to_vec()
+            .par_chunks_mut(dynamic_sizes(crypted.len()) as usize)
+            .map(|data: &mut [u8]| {
+                xor_decrypt(nonce, &pwd, data).map_err(|e| Errors::InvalidXor(e.to_string()))
+            })
+            .collect::<Result<Vec<Vec<u8>>, Errors>>()?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<u8>>();
+
+        let mut unshifted =
+            dynamic_chunk_unshift(&in_s_bytes(&xor_decrypted, nonce, &pwd), nonce, &pwd);
+
+        xor_decrypted.zeroize();
+
+        let mut unmixed = unmix_blocks(&mut unshifted, nonce, &pwd)?;
+
+        unshifted.zeroize();
+
+        let mut decrypted_data = in_s_bytes(&unmixed, nonce, &pwd);
+
+        unmixed.zeroize();
+
+        let mac = blake3::keyed_hash(
+            blake3::hash(&crypted).as_bytes(),
+            &xor_encrypt(nonce, &pwd, &decrypted_data)?,
+        ); // Generate a MAC for the data
+
         pwd.zeroize();
-        return Err(Errors::InvalidAlgorithm);
+
+        if mac.as_bytes().ct_eq(mac_key).unwrap_u8() != 1 {
+            // Check if the MAC is valid
+            decrypted_data.zeroize();
+            return Err(Errors::InvalidMac("Invalid authentication".to_string()));
+        }
+
+        Ok(decrypted_data)
     }
-
-    let mut xor_decrypted = crypted
-        .to_vec()
-        .par_chunks_mut(dynamic_sizes(crypted.len()) as usize)
-        .map(|data: &mut [u8]| {
-            xor_decrypt(nonce, &pwd, data).map_err(|e| Errors::InvalidXor(e.to_string()))
-        })
-        .collect::<Result<Vec<Vec<u8>>, Errors>>()?
-        .into_iter()
-        .flatten()
-        .collect::<Vec<u8>>();
-
-    let mut unshifted =
-        dynamic_chunk_unshift(&in_s_bytes(&xor_decrypted, nonce, &pwd), nonce, &pwd);
-
-    xor_decrypted.zeroize();
-
-    let mut unmixed = unmix_blocks(&mut unshifted, nonce, &pwd)?;
-
-    unshifted.zeroize();
-
-    let mut decrypted_data = in_s_bytes(&unmixed, nonce, &pwd);
-
-    unmixed.zeroize();
-
-    let mac = blake3::keyed_hash(
-        blake3::hash(&crypted).as_bytes(),
-        &xor_encrypt(nonce, &pwd, &decrypted_data)?,
-    ); // Generate a MAC for the data
-
-    pwd.zeroize();
-
-    if mac.as_bytes().ct_eq(mac_key).unwrap_u8() != 1 {
-        // Check if the MAC is valid
-        decrypted_data.zeroize();
-        return Err(Errors::InvalidMac("Invalid authentication".to_string()));
-    }
-
-    Ok(decrypted_data)
 }

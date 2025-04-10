@@ -33,21 +33,42 @@ The security of this implementation relies on:
 ## Usage
 
 ```rust
-use atom_encryption::{encrypt, decrypt, nonce};
+use atomcrypte::{AtomCrypte, Nonce, NonceData, AsNonce};
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Generate a secure nonce
-    let nonce_value = nonce()?;
-    
-    // Encrypt some data
-    let password = "YourVeryStrongPasswordHere";
-    let data = b"Secret message to encrypt";
-    let encrypted = encrypt(password, data, &nonce_value)?;
-    
-    // Decrypt the data
-    let decrypted = decrypt(password, &encrypted, &nonce_value)?;
-    assert_eq!(data, &decrypted[..]);
-    
+fn main() -> Result<(), atomcrypte::Errors> {
+    let password = "SuperSecretPassword";
+
+    // Example 1: Random Nonce
+    let nonce1 = Nonce::nonce()?; // Random 32-byte Nonce
+    let data = b"Hello, AtomCrypte World!";
+    let encrypted1 = AtomCrypte::encrypt(password, data, nonce1)?;
+    let decrypted1 = AtomCrypte::decrypt(password, &encrypted1, nonce1)?;
+    println!("Random Nonce Decrypted: {}", String::from_utf8_lossy(&decrypted1));
+
+    // Example 2: Hashed Nonce (Extra Security)
+    let nonce2 = Nonce::hashed_nonce()?; 
+    let encrypted2 = AtomCrypte::encrypt(password, data, nonce2)?;
+    let decrypted2 = AtomCrypte::decrypt(password, &encrypted2, nonce2)?;
+    println!("Hashed Nonce Decrypted: {}", String::from_utf8_lossy(&decrypted2));
+
+    // Example 3: Tagged Nonce (Nonce based on tag)
+    let nonce3 = Nonce::tagged_nonce(b"custom-tag")?;
+    let encrypted3 = AtomCrypte::encrypt(password, data, nonce3)?;
+    let decrypted3 = AtomCrypte::decrypt(password, &encrypted3, nonce3)?;
+    println!("Tagged Nonce Decrypted: {}", String::from_utf8_lossy(&decrypted3));
+
+    // Example 4: Vec<u8> to NonceData Conversion
+    let raw_nonce_vec = nonce1.to_vec();
+    let nonce_from_vec = raw_nonce_vec.as_nonce()?; // Safe conversion
+    let decrypted4 = AtomCrypte::decrypt(password, &encrypted1, nonce_from_vec)?;
+    println!("Vec to NonceData Decrypted: {}", String::from_utf8_lossy(&decrypted4));
+
+    // Example 5: &[u8] to NonceData Conversion
+    let raw_nonce_slice = nonce1.as_bytes();
+    let nonce_from_slice = raw_nonce_slice.as_nonce()?; // Safe conversion
+    let decrypted5 = AtomCrypte::decrypt(password, &encrypted1, nonce_from_slice)?;
+    println!("Slice to NonceData Decrypted: {}", String::from_utf8_lossy(&decrypted5));
+
     Ok(())
 }
 ```
