@@ -10,12 +10,29 @@ static VERSION: &[u8] = b"atom-version:0x1";
 pub struct Nonce;
 pub struct AtomCrypte;
 
+// # AtomCrypte Encryption Library
+// A multi-layered, secure encryption library combining:
+// - Blake3 hashing for fast and secure key derivation
+// - Argon2 for password-based key derivation
+// - Dynamic S-boxes for substitution operations
+// - Chunk-based data transformation
+// - Authenticated encryption with MAC validation
+// - Constant-time operations to prevent timing attacks
+// - Secure memory handling with zeroize
+//
+// This library implements a custom encryption protocol designed to provide
+// multiple layers of security through various cryptographic techniques.
+
+/// Represents different types of nonces used in the encryption process:
+/// - TaggedNonce: Nonce combined with a user-provided tag
+/// - HashedNonce: Cryptographically hashed nonce for extra randomness
+/// - Nonce: Standard cryptographically secure random nonce
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum NonceData {
     TaggedNonce([u8; 32]),
     HashedNonce([u8; 32]),
     Nonce([u8; 32]),
-}
+} // Multiple data types for future usage
 
 #[derive(Debug, Error)]
 pub enum Errors {
@@ -165,7 +182,7 @@ fn xor_decrypt(nonce: &[u8], pwd: &[u8], input: &[u8]) -> Result<Vec<u8>, Errors
         .collect::<Vec<u8>>();
 
     match out.is_empty() {
-        true => return Err(Errors::InvalidXor("Empty vector".to_string())),
+        true => return Err(Errors::InvalidXor("Empty vector".to_string())), // If out vector is empty then returns an Error
         false => Ok(out),
     }
 }
@@ -177,10 +194,10 @@ fn mix_blocks(data: &mut Vec<u8>, nonce: &[u8], pwd: &[u8]) -> Result<Vec<u8>, E
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(thread)
         .build()
-        .map_err(|e| Errors::ThreadPool(e.to_string()))?;
+        .map_err(|e| Errors::ThreadPool(e.to_string()))?; // Builds Thread Pool for performance and resource usage optimization.
 
     if data.len().ct_eq(&3).unwrap_u8() == 1 {
-        return Ok(data.to_vec());
+        return Ok(data.to_vec()); // If data len <
     }
 
     let pool = pool.install(|| {
@@ -196,7 +213,7 @@ fn mix_blocks(data: &mut Vec<u8>, nonce: &[u8], pwd: &[u8]) -> Result<Vec<u8>, E
 
                 byte
             })
-            .collect::<Vec<u8>>()
+            .collect::<Vec<u8>>() // While going through data changing bits, bits by bits
     });
 
     Ok(pool)
@@ -239,17 +256,19 @@ fn derive_password_key(pwd: &[u8], salt: &[u8]) -> Result<Vec<u8>, Errors> {
         return Err(Errors::Argon2Failed("Invalid Password".to_string()));
     }
 
+    // TODO: Better Salt
     let salt = SaltString::encode_b64(salt).map_err(|e| Errors::Argon2Failed(e.to_string()))?;
     let argon = Argon2::default();
 
     let mut out = vec![0u8; 32]; // 256-bit key
     argon
         .hash_password_into(pwd, salt.as_str().as_bytes(), &mut out)
-        .map_err(|e| Errors::Argon2Failed(e.to_string()))?;
+        .map_err(|e| Errors::Argon2Failed(e.to_string()))?; // Hashing Password VIA Argon2
 
     Ok(out)
 }
 
+// TODO: Better key verification system via new dervition system; While Argon2 getting better salt Key will become more secure and easy to verify
 fn verify_keys_constant_time(key1: &[u8], key2: &[u8]) -> Result<bool, Errors> {
     if key1.len().ct_eq(&key2.len()).unwrap_u8() != 1 {
         return Ok(false);
@@ -321,6 +340,7 @@ fn dynamic_sizes(data_len: usize) -> u32 {
     }
 }
 
+// TODO: Better chunk generation
 fn get_chunk_sizes(data_len: usize, nonce: &[u8], key: &[u8]) -> Vec<usize> {
     let mut sizes = Vec::new();
     let mut pos = 0;
@@ -330,8 +350,8 @@ fn get_chunk_sizes(data_len: usize, nonce: &[u8], key: &[u8]) -> Vec<usize> {
     let data_size = dynamic_sizes(data_len) as usize;
 
     while pos < data_len {
-        let size = 4 + (seed[pos % seed.len()] as usize % data_size); // Generate a random size for the chunk
-        sizes.push(size.min(data_len - pos));
+        let size = 4 + (seed[pos % seed.len()] as usize % data_size); // Generate a random size for the chunk via Pos % Seed Lenght
+        sizes.push(size.min(data_len - pos)); // Prevents code from unexpected errors and pushing data to sizes Vector
         pos += size;
     }
 
