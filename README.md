@@ -128,7 +128,6 @@ The decryption process reverses all operations in the exact opposite order, with
 - **Password Strength**: The security of encrypted data ultimately depends on password entropy
 - **Nonce Reuse**: Never reuse a nonce with the same password
 - **Memory Protection**: While sensitive data is zeroized after use, physical memory attacks remain a consideration
-- **Implementation Verification**: This library would benefit from formal security auditing
 
 ## Performance
 
