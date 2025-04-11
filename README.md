@@ -1,36 +1,60 @@
-## Security Disclaimer
+## ⚠️ Security Notice
+ - WARNING: AtomCrypte is an experimental encryption library and has not yet passed formal security audits or NCC Group testing.
+It is provided as-is for research, educational, and experimental purposes only.
+Do not use AtomCrypte in production environments or for sensitive data until it has been properly reviewed and verified by professional cryptographers.
 
-While this implementation incorporates multiple security techniques, no custom cryptographic implementation should be used in production without thorough review by security experts. The algorithm has not undergone formal cryptanalysis or standardization.
+# AtomCrypte
 
-# Atom Encryption
-
-A high-security, potentially post-quantum resistant encryption implementation in Rust.
-
-## Overview
-
-Atom Encryption is a multi-layered encryption system that employs multiple transformations, dynamic S-boxes, and parallel processing to create a robust cryptographic solution. The algorithm combines several techniques to potentially resist both classical and quantum attacks.
+- AtomCrypte is a high-performance, security-focused encryption library built in Rust that employs multiple layers of cryptographic operations to provide robust data protection.
 
 ## Features
 
-- **Multiple Security Layers**: XOR-based encryption, dynamic S-boxes, block mixing, and data reversal
-- **Strong Cryptographic Primitives**: Blake3 hashing, Argon2 key derivation, and MAC authentication
-- **Memory Safety**: All sensitive data is zeroed after use
-- **Side-Channel Protection**: Constant-time comparisons for critical operations
-- **Performance Optimized**: Parallel processing with Rayon for high throughput
-- **Dynamic Processing**: Chunk sizes adjusted based on data length for optimal performance
-- **Potential Post-Quantum Resistance**: Multiple independent security layers may provide resistance against quantum attacks
+- **Multi-layered Encryption**: Combines XOR operations, dynamic S-boxes, block mixing, and MAC verification
+- **High Performance**: Utilizes Rayon for parallel processing to optimize encryption and decryption speeds
+- **Security-first Design**: Implements constant-time comparisons and secure key derivation
+- **Memory Safety**: Automatically zeroizes sensitive data after use
+- **Flexible Nonce Management**: Supports regular, hashed, and tagged nonces for different use cases
 
-## Security Considerations
+## Security Properties
 
-The security of this implementation relies on:
-
-- 256-bit encryption keys
-- 32-byte random nonces
-- Multiple transformation layers (XOR, rotate, add, S-box, chunk mixing)
-- Data reversal operations for enhanced entropy
-- MAC authentication for integrity verification
+- **Dynamic S-Box Generation**: Creates unique substitution boxes based on nonce and password
+- **Dynamic Chunk Processing**: Varies chunk sizes and operations based on data length and cryptographic inputs
+- **Message Authentication**: Implements BLAKE3-based MAC for integrity verification
+- **Strong Key Derivation**: Uses Argon2 for password-based key derivation with salting
+- **Side-channel Resistance**: Employs constant-time operations for sensitive comparisons
 
 ## Usage
+
+### Basic Encryption and Decryption
+
+```rust
+use atom_crypte::{AtomCrypte, Nonce, NonceData};
+
+// Generate a secure nonce
+let nonce = Nonce::nonce()?;
+
+// Encrypt data
+let encrypted = AtomCrypte::encrypt("password123", "Hello, world!".as_bytes(), nonce)?;
+
+// Decrypt data
+let decrypted = AtomCrypte::decrypt("password123", &encrypted, nonce)?;
+assert_eq!(decrypted, "Hello, world!".as_bytes());
+```
+
+### Using Different Nonce Types
+
+```rust
+// Standard nonce
+let standard_nonce = Nonce::nonce()?;
+
+// Hashed nonce (Blake3 hashed for additional randomness)
+let hashed_nonce = Nonce::hashed_nonce()?;
+
+// Tagged nonce (combines randomness with application-specific tag)
+let tagged_nonce = Nonce::tagged_nonce(b"user-data")?;
+```
+
+### Advanced Usage Example
 
 ```rust
 use atomcrypte::{AtomCrypte, Nonce, NonceData, AsNonce};
@@ -73,39 +97,50 @@ fn main() -> Result<(), atomcrypte::Errors> {
 }
 ```
 
-## Advanced Security
-
-For maximum security, consider:
-- Storing the nonce on a separate system from the encrypted data
-- Using a password of appropriate entropy (the system requires a 32-byte key after derivation)
-- Implementing secure key management practices
-
 ## Technical Details
 
-The encryption process follows these steps:
+### Encryption Process
 
-1. Password key derivation using Argon2 and Blake3
-2. Version information encryption
-3. Data transformation through dynamic S-boxes
-4. Block mixing with rotation and XOR operations
-5. Chunk-based processing with dynamic sizing
-6. Data reversal for additional security
-7. Final XOR encryption pass
-8. MAC generation for authentication
+1. **Key Derivation**: Password is derived using Argon2 with the nonce as salt
+2. **S-Box Generation**: Dynamic substitution box created from nonce and password
+3. **Block Mixing**: Data is transformed with rotation, XOR, and addition operations
+4. **Dynamic Chunking**: Data is split into variably sized chunks based on nonce and key
+5. **Chunk Shifting**: Chunks undergo byte-level transformations and are reversed
+6. **XOR Encryption**: Final encryption layer with key and nonce
+7. **MAC Generation**: BLAKE3-based MAC is computed for authentication
+### Decryption Process
 
-The decryption process reverses these steps in the correct order to recover the original data.
+The decryption process reverses all operations in the exact opposite order, with constant-time verification of both the version marker and authentication code.
 
 ## Dependencies
 
-- `argon2`: For secure password hashing
-- `blake3`: For fast cryptographic hashing
-- `rand`: For secure random number generation
-- `rayon`: For parallel processing
-- `subtle`: For constant-time equality comparison
-- `thiserror`: For error handling
-- `zeroize`: For secure memory cleanup
-- `num_cpus`: For optimal thread management
+- **argon2**: Password hashing
+- **blake3**: Fast cryptographic hashing
+- **rand**: Secure random number generation
+- **rayon**: Parallel computation
+- **subtle**: Constant-time comparison operations
+- **thiserror**: Error handling
+- **zeroize**: Secure memory clearing
+- **num_cpus**: CPU core detection for optimal threading
+
+## Security Considerations
+
+- **Password Strength**: The security of encrypted data ultimately depends on password entropy
+- **Nonce Reuse**: Never reuse a nonce with the same password
+- **Memory Protection**: While sensitive data is zeroized after use, physical memory attacks remain a consideration
+- **Implementation Verification**: This library would benefit from formal security auditing
+
+## Performance
+
+AtomCrypte automatically scales its operations based on input size and available CPU cores:
+
+- Small data (<1KB): Optimized for minimal overhead
+- Medium data (1KB-100MB): Balanced security and performance
+- Large data (>100MB): Maximized parallelism with larger chunk sizes
+
+## Flow Diagram
+![FLOW_DIAGRAM](flow_diagram.svg)
 
 ## License
 
-MIT License. See [`LICENSE`](LICENSE) file for details
+MIT License. See [`MIT`](LICENSE) file for details.
