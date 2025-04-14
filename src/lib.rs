@@ -350,7 +350,7 @@ fn get_chunk_sizes(data_len: usize, nonce: &[u8], key: &[u8]) -> Vec<usize> {
     let data_size = dynamic_sizes(data_len) as usize;
 
     while pos < data_len {
-        let size = 4 + (seed[pos % seed.len()] as usize % data_size); // Generate a random size for the chunk via Pos % Seed Lenght
+        let size = data_size + (seed[pos % seed.len()] as usize % 8); // Generate a random size for the chunk via Pos % Seed Lenght
         sizes.push(size.min(data_len - pos)); // Prevents code from unexpected errors and pushing data to sizes Vector
         pos += size;
     }
