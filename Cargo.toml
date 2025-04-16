@@ -12,6 +12,8 @@ thiserror = "2.0"
 num_cpus = "1"
 argon2 = "0.5"
 zeroize = "1.8"
+ocl = "0.19"
+whoami = "1.6"
 
 [profile.release]
 opt-level = 3
