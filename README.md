@@ -104,6 +104,11 @@ let decrypted = AtomCrypte::decrypt("my-password", &encrypted, nonce, config)?;
 
 ---
 
+📄 License
+
+MIT License. This project is for research and educational use. Not recommended for production environments without a formal audit.
+
+---
 **Note**: AtomCrypte is not a replacement for industry-standard ciphers like AES or ChaCha20. Instead, it demonstrates what is possible when encryption is treated as an extendable, modular system.
 
 Made with love (and zero sleep).
