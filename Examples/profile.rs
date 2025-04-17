@@ -1,11 +1,11 @@
 use atomcrypte::{AtomCrypte, Config, Nonce, Rng};
 
 fn main() {
-    let nonce = Nonce::machine_nonce(Some(Rng::osrng()));
+    let nonce = Nonce::nonce(Rng::osrng());
     let data = b"Hello, world!";
     let password = "super";
 
-    let config = Config::default().with_device(atomcrypte::DeviceList::Gpu);
+    let config = Config::from_profile(atomcrypte::Profile::Secure);
 
     let encrypted = AtomCrypteBuilder::new()
         .nonce(nonce)

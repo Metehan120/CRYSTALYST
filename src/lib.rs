@@ -8,10 +8,7 @@ use thiserror::Error;
 use zeroize::Zeroize;
 pub mod gpu;
 
-static VERSION: &[u8] = b"atom-version:0x1";
-
-pub struct Nonce;
-pub struct AtomCrypte;
+static VERSION: &[u8] = b"atom-version:0x2";
 
 // # AtomCrypte Encryption Library
 // A multi-layered, secure encryption library combining:
@@ -54,6 +51,8 @@ pub enum Errors {
     InvalidAlgorithm,
     #[error("Kernel Error: {0}")]
     KernelError(String),
+    #[error("Build Failed: {0}")]
+    BuildFailed(String),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -71,16 +70,41 @@ pub enum SboxTypes {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub enum IrreduciblePoly {
+    AES,
+    Custom(u8),
+}
+
+impl IrreduciblePoly {
+    fn value(&self) -> u8 {
+        match self {
+            IrreduciblePoly::AES => 0x1b, // x^8 + x^4 + x^3 + x + 1
+            IrreduciblePoly::Custom(val) => *val,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct Config {
     pub device: DeviceList,
     pub sbox: SboxTypes,
+    pub thread_num: usize,
+    pub gf_poly: IrreduciblePoly,
 } // For feature use
+
+pub enum Profile {
+    Secure,
+    Balanced,
+    Fast,
+}
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             device: DeviceList::Cpu,
             sbox: SboxTypes::PasswordAndNonceBased,
+            thread_num: num_cpus::get(),
+            gf_poly: IrreduciblePoly::AES,
         }
     }
 }
@@ -94,6 +118,40 @@ impl Config {
     pub fn with_device(mut self, device: DeviceList) -> Self {
         self.device = device;
         self
+    }
+
+    pub fn set_thread(mut self, num: usize) -> Self {
+        self.thread_num = num;
+        self
+    }
+
+    pub fn gf_poly(mut self, poly: IrreduciblePoly) -> Self {
+        self.gf_poly = poly;
+        self
+    }
+
+    pub fn from_profile(profile: Profile) -> Self {
+        match profile {
+            Profile::Fast => Self {
+                device: DeviceList::Gpu,
+                sbox: SboxTypes::PasswordBased,
+                thread_num: num_cpus::get(),
+                gf_poly: IrreduciblePoly::AES,
+            },
+
+            Profile::Balanced => Self {
+                device: DeviceList::Auto,
+                sbox: SboxTypes::PasswordAndNonceBased,
+                thread_num: num_cpus::get(),
+                gf_poly: IrreduciblePoly::AES,
+            },
+            Profile::Secure => Self {
+                device: DeviceList::Cpu,
+                sbox: SboxTypes::PasswordAndNonceBased,
+                thread_num: num_cpus::get(),
+                gf_poly: IrreduciblePoly::AES,
+            },
+        }
     }
 }
 
@@ -230,6 +288,88 @@ impl MachineRng for str {
     }
 }
 
+pub struct AtomCrypteBuilder {
+    config: Option<Config>,
+    data: Option<Vec<u8>>,
+    password: Option<String>,
+    nonce: Option<NonceData>,
+}
+
+pub struct Nonce;
+
+struct GaloisField {
+    mul_table: [[u8; 256]; 256],
+    inv_table: [u8; 256],
+    irreducible_poly: u8,
+}
+
+impl GaloisField {
+    fn new(irreducible_poly: u8) -> Self {
+        let mut gf = Self {
+            mul_table: [[0; 256]; 256],
+            inv_table: [0; 256],
+            irreducible_poly,
+        };
+
+        gf.initialize_tables();
+        gf
+    }
+
+    fn initialize_tables(&mut self) {
+        // Çarpma tablosunu hesaplama
+        for i in 0..256 {
+            for j in 0..256 {
+                self.mul_table[i][j] = self.multiply(i as u8, j as u8);
+            }
+        }
+
+        // Terslik tablosunu hesaplama
+        // 0'ın tersi yok, diğerleri için hesapla
+        for i in 1..256 {
+            for j in 1..256 {
+                if self.mul_table[i][j] == 1 {
+                    self.inv_table[i] = j as u8;
+                }
+            }
+        }
+    }
+
+    fn multiply(&self, a: u8, b: u8) -> u8 {
+        let mut p = 0;
+        let mut a_val = a as u16;
+        let mut b_val = b as u16;
+
+        while a_val != 0 && b_val != 0 {
+            if b_val & 1 != 0 {
+                p ^= a_val as u8;
+            }
+
+            let high_bit_set = a_val & 0x80;
+            a_val <<= 1;
+
+            if high_bit_set != 0 {
+                a_val ^= self.irreducible_poly as u16;
+            }
+
+            b_val >>= 1;
+        }
+
+        p as u8
+    }
+
+    fn fast_multiply(&self, a: u8, b: u8) -> u8 {
+        self.mul_table[a as usize][b as usize]
+    }
+
+    fn inverse(&self, a: u8) -> Option<u8> {
+        if a == 0 {
+            None // 0'ın tersi yoktur
+        } else {
+            Some(self.inv_table[a as usize])
+        }
+    }
+}
+
 impl Nonce {
     pub fn hashed_nonce(osrng: Rng) -> NonceData {
         let mut nonce = *osrng.as_bytes();
@@ -296,21 +436,86 @@ impl Nonce {
     }
 }
 
-fn xor_encrypt(nonce: &[u8], pwd: &[u8], input: &[u8]) -> Result<Vec<u8>, Errors> {
-    let out = input
-        .par_iter()
-        .enumerate()
-        .map(|(i, b)| {
-            let masked = b ^ (nonce[i % nonce.len()] ^ pwd[i % pwd.len()]); // XOR the byte with the nonce and password
-            let mut masked =
-                masked.rotate_left((nonce[i % nonce.len()] ^ pwd[i % pwd.len()] % 8) as u32); // Rotate the byte left by the nonce value
+fn triangle_mix_columns(
+    data: &mut [u8],
+    gf: &GaloisField,
+    config: Config,
+) -> Result<Vec<u8>, Errors> {
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(config.thread_num)
+        .build()
+        .map_err(|e| Errors::ThreadPool(e.to_string()))?; // Builds Thread Pool for performance and resource usage optimization.
 
-            masked = masked.wrapping_add(nonce[i % nonce.len()]); // Add the nonce to the byte
-            masked = masked.wrapping_add(pwd[i % pwd.len()]); // Add the password to the byte
+    pool.install(|| {
+        data.par_chunks_exact_mut(3).for_each(|chunk| {
+            let a = chunk[0];
+            let b = chunk[1];
+            let c = chunk[2];
 
-            masked
+            chunk[0] = gf.fast_multiply(3, a) ^ gf.fast_multiply(2, b) ^ c;
+            chunk[1] = gf.fast_multiply(4, b) ^ c;
+            chunk[2] = gf.fast_multiply(5, c);
         })
-        .collect::<Vec<u8>>();
+    });
+
+    Ok(data.to_vec())
+}
+
+fn inverse_triangle_mix_columns(
+    data: &mut [u8],
+    gf: &GaloisField,
+    config: Config,
+) -> Result<Vec<u8>, Errors> {
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(config.thread_num)
+        .build()
+        .map_err(|e| Errors::ThreadPool(e.to_string()))?; // Builds Thread Pool for performance and resource usage optimization.
+
+    pool.install(|| {
+        data.par_chunks_exact_mut(3).for_each(|chunk| {
+            let a = chunk[0];
+            let b = chunk[1];
+            let c = chunk[2];
+
+            let inv_5 = gf.inverse(5).unwrap_or(1);
+            let c_prime = gf.fast_multiply(inv_5, c);
+
+            let inv_4 = gf.inverse(4).unwrap_or(1);
+            let b_prime = gf.fast_multiply(inv_4, b ^ gf.fast_multiply(1, c_prime));
+
+            let inv_3 = gf.inverse(3).unwrap_or(1);
+            let a_prime = gf.fast_multiply(inv_3, a ^ gf.fast_multiply(2, b_prime) ^ c_prime);
+
+            chunk[0] = a_prime;
+            chunk[1] = b_prime;
+            chunk[2] = c_prime;
+        })
+    });
+
+    Ok(data.to_vec())
+}
+
+fn xor_encrypt(nonce: &[u8], pwd: &[u8], input: &[u8], config: Config) -> Result<Vec<u8>, Errors> {
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(config.thread_num)
+        .build()
+        .map_err(|e| Errors::ThreadPool(e.to_string()))?;
+    let out = pool.install(|| {
+        input
+            .into_par_iter()
+            .enumerate()
+            .map(|(i, b)| {
+                let masked = b ^ (nonce[i % nonce.len()] ^ pwd[i % pwd.len()]); // XOR the byte with the nonce and password
+                let mut masked =
+                    masked.rotate_left((nonce[i % nonce.len()] ^ pwd[i % pwd.len()] % 8) as u32); // Rotate the byte left by the nonce value
+
+                masked = masked.wrapping_add(nonce[i % nonce.len()]); // Add the nonce to the byte
+                masked = masked.wrapping_add(pwd[i % pwd.len()]); // Add the password to the byte
+
+                masked
+            })
+            .collect::<Vec<u8>>()
+    });
 
     match out.is_empty() {
         true => return Err(Errors::InvalidXor("Empty vector".to_string())),
@@ -318,20 +523,27 @@ fn xor_encrypt(nonce: &[u8], pwd: &[u8], input: &[u8]) -> Result<Vec<u8>, Errors
     }
 }
 
-fn xor_decrypt(nonce: &[u8], pwd: &[u8], input: &[u8]) -> Result<Vec<u8>, Errors> {
-    let out = input
-        .par_iter()
-        .enumerate()
-        .map(|(i, b)| {
-            let masked = b.wrapping_sub(pwd[i % pwd.len()]); // Subtract the password from the byte
-            let masked = masked.wrapping_sub(nonce[i % nonce.len()]); // Subtract the nonce from the byte
+fn xor_decrypt(nonce: &[u8], pwd: &[u8], input: &[u8], config: Config) -> Result<Vec<u8>, Errors> {
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(config.thread_num)
+        .build()
+        .map_err(|e| Errors::ThreadPool(e.to_string()))?;
 
-            let masked =
-                masked.rotate_right((nonce[i % nonce.len()] ^ pwd[i % pwd.len()] % 8) as u32); // Rotate the byte right by the nonce value
+    let out = pool.install(|| {
+        input
+            .into_par_iter()
+            .enumerate()
+            .map(|(i, b)| {
+                let masked = b.wrapping_sub(pwd[i % pwd.len()]); // Subtract the password from the byte
+                let masked = masked.wrapping_sub(nonce[i % nonce.len()]); // Subtract the nonce from the byte
 
-            masked ^ (nonce[i % nonce.len()] ^ pwd[i % pwd.len()]) // XOR the byte with the nonce and password
-        })
-        .collect::<Vec<u8>>();
+                let masked =
+                    masked.rotate_right((nonce[i % nonce.len()] ^ pwd[i % pwd.len()] % 8) as u32); // Rotate the byte right by the nonce value
+
+                masked ^ (nonce[i % nonce.len()] ^ pwd[i % pwd.len()]) // XOR the byte with the nonce and password
+            })
+            .collect::<Vec<u8>>()
+    });
 
     match out.is_empty() {
         true => return Err(Errors::InvalidXor("Empty vector".to_string())), // If out vector is empty then returns an Error
@@ -339,12 +551,17 @@ fn xor_decrypt(nonce: &[u8], pwd: &[u8], input: &[u8]) -> Result<Vec<u8>, Errors
     }
 }
 
-fn mix_blocks(data: &mut Vec<u8>, nonce: &[u8], pwd: &[u8]) -> Result<Vec<u8>, Errors> {
+fn mix_blocks(
+    data: &mut Vec<u8>,
+    nonce: &[u8],
+    pwd: &[u8],
+    config: Config,
+) -> Result<Vec<u8>, Errors> {
     let nonce = blake3::hash(&[nonce, pwd].concat());
     let nonce = nonce.as_bytes();
-    let thread = num_cpus::get() / 2;
+
     let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(thread)
+        .num_threads(config.thread_num)
         .build()
         .map_err(|e| Errors::ThreadPool(e.to_string()))?; // Builds Thread Pool for performance and resource usage optimization.
 
@@ -371,13 +588,17 @@ fn mix_blocks(data: &mut Vec<u8>, nonce: &[u8], pwd: &[u8]) -> Result<Vec<u8>, E
     Ok(pool)
 }
 
-fn unmix_blocks(data: &mut Vec<u8>, nonce: &[u8], pwd: &[u8]) -> Result<Vec<u8>, Errors> {
+fn unmix_blocks(
+    data: &mut Vec<u8>,
+    nonce: &[u8],
+    pwd: &[u8],
+    config: Config,
+) -> Result<Vec<u8>, Errors> {
     let nonce = blake3::hash(&[nonce, pwd].concat());
     let nonce = nonce.as_bytes();
-    let thread = num_cpus::get() / 2;
 
     let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(thread)
+        .num_threads(config.thread_num)
         .build()
         .map_err(|e| Errors::ThreadPool(e.to_string()))?;
 
@@ -463,17 +684,27 @@ fn generate_dynamic_sbox(nonce: &[u8], key: &[u8], cfg: Config) -> [u8; 256] {
     sbox
 }
 
-fn in_s_bytes(data: &[u8], nonce: &[u8], pwd: &[u8], cfg: Config) -> Vec<u8> {
+fn in_s_bytes(data: &[u8], nonce: &[u8], pwd: &[u8], cfg: Config) -> Result<Vec<u8>, Errors> {
     let mut sbox = generate_dynamic_sbox(nonce, pwd, cfg); // Generate the sbox
     let inv_sbox = generate_inv_s_box(&sbox); // Generate the inverse sbox
 
     sbox.zeroize();
 
-    data.par_iter().map(|b| inv_sbox[*b as usize]).collect() // Inverse the sbox
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(cfg.thread_num)
+        .build()
+        .map_err(|e| Errors::ThreadPool(e.to_string()))?;
+
+    Ok(pool.install(|| data.par_iter().map(|b| inv_sbox[*b as usize]).collect())) // Inverse the sbox
 }
 
-fn s_bytes(data: &[u8], sbox: &[u8; 256]) -> Vec<u8> {
-    data.par_iter().map(|b| sbox[*b as usize]).collect() // Apply the sbox
+fn s_bytes(data: &[u8], sbox: &[u8; 256], cfg: Config) -> Result<Vec<u8>, Errors> {
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(cfg.thread_num)
+        .build()
+        .map_err(|e| Errors::ThreadPool(e.to_string()))?;
+
+    Ok(pool.install(|| data.par_iter().map(|b| sbox[*b as usize]).collect())) // Apply the sbox
 }
 
 fn dynamic_sizes(data_len: usize) -> u32 {
@@ -517,10 +748,20 @@ fn get_chunk_sizes(data_len: usize, nonce: &[u8], key: &[u8]) -> Vec<usize> {
     sizes
 }
 
-fn dynamic_shift(data: &[u8], nonce: &[u8], password: &[u8]) -> Vec<u8> {
+fn dynamic_shift(
+    data: &[u8],
+    nonce: &[u8],
+    password: &[u8],
+    config: Config,
+) -> Result<Vec<u8>, Errors> {
     let key = blake3::hash(&[nonce, password].concat())
         .as_bytes()
         .to_vec();
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(config.thread_num)
+        .build()
+        .map_err(|e| Errors::ThreadPool(e.to_string()))?;
 
     let chunk_sizes = get_chunk_sizes(data.len(), nonce, &key);
 
@@ -533,24 +774,37 @@ fn dynamic_shift(data: &[u8], nonce: &[u8], password: &[u8]) -> Vec<u8> {
         let rotate_by = (nonce[i % nonce.len()] % 8) as u32; // Rotate the byte left by the nonce value
         let xor_val = key[i % key.len()]; // XOR the byte with the nonce
 
-        chunk.par_iter_mut().for_each(|b| {
-            *b = b.rotate_left(rotate_by); // Rotate the byte left by the nonce value
-            *b ^= xor_val; // XOR the byte with the nonce
-        });
+        pool.install(|| {
+            chunk.par_iter_mut().for_each(|b| {
+                *b = b.rotate_left(rotate_by); // Rotate the byte left by the nonce value
+                *b ^= xor_val; // XOR the byte with the nonce
+            });
 
-        shifted.par_extend(chunk);
-        cursor += size; // Move the cursor to the next chunk
+            shifted.par_extend(chunk);
+            cursor += size; // Move the cursor to the next chunk
+        })
     }
 
     shifted = shifted.iter().rev().cloned().collect::<Vec<u8>>();
-    shifted
+    Ok(shifted)
 }
 
-fn dynamic_unshift(data: &[u8], nonce: &[u8], password: &[u8]) -> Vec<u8> {
+fn dynamic_unshift(
+    data: &[u8],
+    nonce: &[u8],
+    password: &[u8],
+    config: Config,
+) -> Result<Vec<u8>, Errors> {
     let data = data.iter().rev().cloned().collect::<Vec<u8>>();
     let key = blake3::hash(&[nonce, password].concat())
         .as_bytes()
         .to_vec();
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(config.thread_num)
+        .build()
+        .map_err(|e| Errors::ThreadPool(e.to_string()))?;
+
     let chunk_sizes = get_chunk_sizes(data.len(), nonce, &key);
 
     let mut original = Vec::new();
@@ -562,16 +816,18 @@ fn dynamic_unshift(data: &[u8], nonce: &[u8], password: &[u8]) -> Vec<u8> {
         let rotate_by = (nonce[i % nonce.len()] % 8) as u32; // Rotate the byte left by the nonce value
         let xor_val = key[i % key.len()]; // XOR the byte with the nonce
 
-        chunk.par_iter_mut().for_each(|b| {
-            *b ^= xor_val; // XOR the byte with the nonce
-            *b = b.rotate_right(rotate_by); // Rotate the byte right by the nonce value
-        });
+        pool.install(|| {
+            chunk.par_iter_mut().for_each(|b| {
+                *b ^= xor_val; // XOR the byte with the nonce
+                *b = b.rotate_right(rotate_by); // Rotate the byte right by the nonce value
+            });
 
-        original.par_extend(chunk);
-        cursor += size; // Move the cursor to the next chunk
+            original.par_extend(chunk);
+            cursor += size; // Move the cursor to the next chunk
+        })
     }
 
-    original
+    Ok(original)
 }
 
 fn auto_dynamic_chunk_shift(
@@ -581,11 +837,11 @@ fn auto_dynamic_chunk_shift(
     config: Config,
 ) -> Result<Vec<u8>, Errors> {
     match config.device {
-        DeviceList::Cpu => Ok(dynamic_shift(data, nonce, password)),
+        DeviceList::Cpu => Ok(dynamic_shift(data, nonce, password, config)?),
         DeviceList::Gpu => dynamic_shift_gpu(data, nonce, password),
         DeviceList::Auto => {
             if ocl::Platform::list().is_empty() {
-                Ok(dynamic_shift(data, nonce, password))
+                Ok(dynamic_shift(data, nonce, password, config)?)
             } else {
                 dynamic_shift_gpu(data, nonce, password)
             }
@@ -600,11 +856,11 @@ fn auto_dynamic_chunk_unshift(
     config: Config,
 ) -> Result<Vec<u8>, Errors> {
     match config.device {
-        DeviceList::Cpu => Ok(dynamic_unshift(data, nonce, password)),
+        DeviceList::Cpu => Ok(dynamic_unshift(data, nonce, password, config)?),
         DeviceList::Gpu => dynamic_unshift_gpu(data, nonce, password),
         DeviceList::Auto => {
             if ocl::Platform::list().is_empty() {
-                Ok(dynamic_unshift(data, nonce, password))
+                Ok(dynamic_unshift(data, nonce, password, config)?)
             } else {
                 dynamic_unshift_gpu(data, nonce, password)
             }
@@ -612,139 +868,216 @@ fn auto_dynamic_chunk_unshift(
     }
 }
 
-impl AtomCrypte {
-    pub fn encrypt(
-        password: &str,
-        data: &[u8],
-        nonce: NonceData,
-        config: Config,
-    ) -> Result<Vec<u8>, Errors> {
-        let nonce = nonce.as_bytes();
+fn encrypt(
+    password: &str,
+    data: &[u8],
+    nonce: NonceData,
+    config: Config,
+) -> Result<Vec<u8>, Errors> {
+    let nonce = nonce.as_bytes();
 
-        let mut password = derive_key(password, nonce);
-        let mut pwd = derive_password_key(&password, nonce)?;
+    let mut password = derive_key(password, nonce);
+    let mut pwd = derive_password_key(&password, nonce)?;
 
-        password.zeroize();
+    password.zeroize();
 
-        let mut out_vec = Vec::new();
-        let encrypted_version = xor_encrypt(nonce, &pwd, VERSION)?;
-        out_vec.extend(encrypted_version);
+    let mut out_vec = Vec::new();
+    let encrypted_version = xor_encrypt(nonce, &pwd, VERSION, config)?;
+    out_vec.extend(encrypted_version);
 
-        let mut s_block = generate_dynamic_sbox(nonce, &pwd, config);
-        let mut mixed_data = mix_blocks(&mut s_bytes(data, &s_block), nonce, &pwd)?;
+    let mut s_block = generate_dynamic_sbox(nonce, &pwd, config);
+    let mut mixed_data = mix_blocks(&mut s_bytes(data, &s_block, config)?, nonce, &pwd, config)?;
+    let mut mixed_columns_data = triangle_mix_columns(
+        &mut mixed_data,
+        &GaloisField::new(config.gf_poly.value()),
+        config,
+    )?;
 
-        let mut shifted_data = s_bytes(
-            &auto_dynamic_chunk_shift(&mixed_data, nonce, &pwd, config)?,
-            &s_block,
-        );
+    mixed_data.zeroize();
 
-        s_block.zeroize();
-        mixed_data.zeroize();
+    let mut shifted_data = s_bytes(
+        &auto_dynamic_chunk_shift(&mixed_columns_data, nonce, &pwd, config)?,
+        &s_block,
+        config,
+    )?;
 
-        let crypted = shifted_data
-            .par_chunks(dynamic_sizes(shifted_data.len()) as usize)
-            .map(|data: &[u8]| {
-                xor_encrypt(nonce, &pwd, &data).map_err(|e| Errors::InvalidXor(e.to_string()))
-            })
-            .collect::<Result<Vec<Vec<u8>>, Errors>>()?
-            .into_iter()
-            .flatten()
-            .collect::<Vec<u8>>();
+    s_block.zeroize();
+    mixed_columns_data.zeroize();
 
-        shifted_data.zeroize();
+    let crypted = shifted_data
+        .par_chunks(dynamic_sizes(shifted_data.len()) as usize)
+        .map(|data: &[u8]| {
+            xor_encrypt(nonce, &pwd, &data, config).map_err(|e| Errors::InvalidXor(e.to_string()))
+        })
+        .collect::<Result<Vec<Vec<u8>>, Errors>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<u8>>();
 
-        let mac = *blake3::keyed_hash(
-            blake3::hash(&crypted).as_bytes(),
-            &xor_encrypt(nonce, &pwd, &data)?,
-        )
-        .as_bytes(); // Generate a MAC for the data
+    shifted_data.zeroize();
 
+    let mac = *blake3::keyed_hash(
+        blake3::hash(&crypted).as_bytes(),
+        &xor_encrypt(nonce, &pwd, &data, config)?,
+    )
+    .as_bytes(); // Generate a MAC for the data
+
+    pwd.zeroize();
+
+    out_vec.extend(crypted);
+    out_vec.extend(mac);
+
+    Ok(out_vec)
+}
+
+fn decrypt(
+    password: &str,
+    data: &[u8],
+    nonce: NonceData,
+    config: Config,
+) -> Result<Vec<u8>, Errors> {
+    let nonce = nonce.as_bytes();
+
+    let password_hash: [u8; 32] = derive_key(password, nonce);
+    let mut expected_password = derive_password_key(&derive_key(password, nonce), nonce)?;
+    let mut pwd = derive_password_key(&password_hash, nonce)?;
+
+    if !verify_keys_constant_time(&pwd, &expected_password)? {
         pwd.zeroize();
-
-        out_vec.extend(crypted);
-        out_vec.extend(mac);
-
-        Ok(out_vec)
+        expected_password.zeroize();
+        return Err(Errors::InvalidMac("Invalid key".to_string()));
     }
 
-    pub fn decrypt(
-        password: &str,
-        data: &[u8],
-        nonce: NonceData,
-        config: Config,
-    ) -> Result<Vec<u8>, Errors> {
-        let nonce = nonce.as_bytes();
+    expected_password.zeroize();
 
-        let password_hash: [u8; 32] = derive_key(password, nonce);
-        let mut expected_password = derive_password_key(&derive_key(password, nonce), nonce)?;
-        let mut pwd = derive_password_key(&password_hash, nonce)?;
+    if data.len() < 32 + VERSION.len() {
+        return Err(Errors::InvalidMac("Data is too short".to_string()));
+    }
 
-        if !verify_keys_constant_time(&pwd, &expected_password)? {
+    let version_len = VERSION.len();
+    let (encrypted_version, rest) = data.split_at(version_len);
+    let (crypted, mac_key) = rest.split_at(rest.len() - 32);
+
+    {
+        let version = xor_decrypt(nonce, &pwd, encrypted_version, config)?;
+
+        if !version.starts_with(b"atom-version") {
             pwd.zeroize();
-            expected_password.zeroize();
-            return Err(Errors::InvalidMac("Invalid key".to_string()));
+            return Err(Errors::InvalidAlgorithm);
         }
+    }
 
-        expected_password.zeroize();
+    let mut xor_decrypted = crypted
+        .to_vec()
+        .par_chunks_mut(dynamic_sizes(crypted.len()) as usize)
+        .map(|data: &mut [u8]| {
+            xor_decrypt(nonce, &pwd, data, config).map_err(|e| Errors::InvalidXor(e.to_string()))
+        })
+        .collect::<Result<Vec<Vec<u8>>, Errors>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<u8>>();
 
-        if data.len() < 32 + VERSION.len() {
-            return Err(Errors::InvalidMac("Data is too short".to_string()));
+    let mut unshifted = auto_dynamic_chunk_unshift(
+        &in_s_bytes(&xor_decrypted, nonce, &pwd, config)?,
+        nonce,
+        &pwd,
+        config,
+    )?;
+
+    xor_decrypted.zeroize();
+
+    let mut inversed_columns = inverse_triangle_mix_columns(
+        &mut unshifted,
+        &GaloisField::new(config.gf_poly.value()),
+        config,
+    )?;
+    let mut unmixed = unmix_blocks(&mut inversed_columns, nonce, &pwd, config)?;
+
+    unshifted.zeroize();
+    inversed_columns.zeroize();
+
+    let mut decrypted_data = in_s_bytes(&unmixed, nonce, &pwd, config)?;
+
+    unmixed.zeroize();
+
+    let mac = blake3::keyed_hash(
+        blake3::hash(&crypted).as_bytes(),
+        &xor_encrypt(nonce, &pwd, &decrypted_data, config)?,
+    ); // Generate a MAC for the data
+
+    pwd.zeroize();
+
+    if mac.as_bytes().ct_eq(mac_key).unwrap_u8() != 1 {
+        // Check if the MAC is valid
+        decrypted_data.zeroize();
+        return Err(Errors::InvalidMac("Invalid authentication".to_string()));
+    }
+
+    Ok(decrypted_data)
+}
+
+impl AtomCrypteBuilder {
+    pub fn new() -> Self {
+        Self {
+            password: None,
+            data: None,
+            config: None,
+            nonce: None,
         }
+    }
 
-        let version_len = VERSION.len();
-        let (encrypted_version, rest) = data.split_at(version_len);
-        let (crypted, mac_key) = rest.split_at(rest.len() - 32);
+    pub fn data(mut self, data: &[u8]) -> Self {
+        self.data = Some(data.to_vec());
+        self
+    }
 
-        {
-            let version = xor_decrypt(nonce, &pwd, encrypted_version)?;
+    pub fn config(mut self, config: Config) -> Self {
+        self.config = Some(config);
+        self
+    }
 
-            if !version.starts_with(b"atom-version") {
-                pwd.zeroize();
-                return Err(Errors::InvalidAlgorithm);
-            }
-        }
+    pub fn password(mut self, password: &str) -> Self {
+        self.password = Some(password.to_string());
+        self
+    }
 
-        let mut xor_decrypted = crypted
-            .to_vec()
-            .par_chunks_mut(dynamic_sizes(crypted.len()) as usize)
-            .map(|data: &mut [u8]| {
-                xor_decrypt(nonce, &pwd, data).map_err(|e| Errors::InvalidXor(e.to_string()))
-            })
-            .collect::<Result<Vec<Vec<u8>>, Errors>>()?
-            .into_iter()
-            .flatten()
-            .collect::<Vec<u8>>();
+    pub fn nonce(mut self, nonce: NonceData) -> Self {
+        self.nonce = Some(nonce);
+        self
+    }
 
-        let mut unshifted = auto_dynamic_chunk_unshift(
-            &in_s_bytes(&xor_decrypted, nonce, &pwd, config),
-            nonce,
-            &pwd,
-            config,
-        )?;
+    pub fn encrypt(self) -> Result<Vec<u8>, Errors> {
+        let config = self
+            .config
+            .ok_or_else(|| Errors::BuildFailed("Missing Config".to_string()))?;
+        let data = self
+            .data
+            .ok_or_else(|| Errors::BuildFailed("Missing Data".to_string()))?;
+        let password = self
+            .password
+            .ok_or_else(|| Errors::BuildFailed("Missing Password".to_string()))?;
+        let nonce = self
+            .nonce
+            .ok_or_else(|| Errors::BuildFailed("Missing Nonce".to_string()))?;
 
-        xor_decrypted.zeroize();
+        encrypt(password.as_str(), &data, nonce, config)
+    }
 
-        let mut unmixed = unmix_blocks(&mut unshifted, nonce, &pwd)?;
+    pub fn decrypt(self) -> Result<Vec<u8>, Errors> {
+        let config = self
+            .config
+            .ok_or_else(|| Errors::BuildFailed("Missing Config".to_string()))?;
+        let data = self
+            .data
+            .ok_or_else(|| Errors::BuildFailed("Missing Data".to_string()))?;
+        let password = self
+            .password
+            .ok_or_else(|| Errors::BuildFailed("Missing Password".to_string()))?;
+        let nonce = self
+            .nonce
+            .ok_or_else(|| Errors::BuildFailed("Missing Nonce".to_string()))?;
 
-        unshifted.zeroize();
-
-        let mut decrypted_data = in_s_bytes(&unmixed, nonce, &pwd, config);
-
-        unmixed.zeroize();
-
-        let mac = blake3::keyed_hash(
-            blake3::hash(&crypted).as_bytes(),
-            &xor_encrypt(nonce, &pwd, &decrypted_data)?,
-        ); // Generate a MAC for the data
-
-        pwd.zeroize();
-
-        if mac.as_bytes().ct_eq(mac_key).unwrap_u8() != 1 {
-            // Check if the MAC is valid
-            decrypted_data.zeroize();
-            return Err(Errors::InvalidMac("Invalid authentication".to_string()));
-        }
-
-        Ok(decrypted_data)
+        decrypt(password.as_str(), &data, nonce, config)
     }
 }
