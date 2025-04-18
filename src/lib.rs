@@ -1,3 +1,181 @@
+/*! # AtomCrypte
+
+A high-performance, multi-layered encryption library designed for flexibility, security, and speed.
+
+---
+
+## 🚧 Disclaimer
+This project is experimental and should not be used in production systems. It is created for academic research, cryptographic experimentation, and learning purposes. Use at your own discretion.
+
+---
+
+## Overview
+
+AtomCrypte is a robust encryption library that combines multiple cryptographic techniques to provide state-of-the-art security with configurable parameters. By leveraging parallel processing capabilities and GPU acceleration, AtomCrypte achieves excellent performance while maintaining a high security standard.
+
+## Key Features
+
+- **Multi-layered encryption architecture**: Combines multiple cryptographic primitives
+- **High performance**: Processes 100MB in approximately 1 seconds
+- **Parallelized operations**: Utilizes all available CPU cores via Rayon
+- **GPU acceleration**: Optional GPU-based processing for higher performance
+- **Galois Field mathematics**: Configurable finite field operations
+- **Dynamic S-boxes**: Password and/or nonce-dependent substitution tables
+- **Authenticated encryption**: MAC validation ensures data integrity
+- **Constant-time operations**: Protection against timing attacks
+- **Secure memory handling**: Sensitive data is properly zeroized from memory
+
+## Cryptographic Components
+
+AtomCrypte integrates several cryptographic primitives and techniques:
+
+- **Blake3**: For fast and secure key derivation
+- **Argon2**: For password-based key derivation with tunable parameters
+- **Dynamic S-boxes**: For substitution operations
+- **Galois Field Mathematics**: For efficient diffusion operations (similar to AES MixColumns)
+- **MAC validation**: Ensures data integrity and authenticity
+
+## Configuration Options
+
+AtomCrypte is highly configurable, allowing users to tailor encryption to their specific needs:
+
+### Device Selection
+```rust
+pub enum DeviceList {
+    Auto,   // Automatically choose between CPU and GPU based on availability
+    Cpu,    // Force CPU-based processing
+    Gpu,    // Force GPU-based processing
+}
+```
+
+### S-box Generation
+```rust
+pub enum SboxTypes {
+    PasswordBased,         // Generate S-box based on password only
+    NonceBased,            // Generate S-box based on nonce only
+    PasswordAndNonceBased, // Generate S-box based on both password and nonce
+}
+```
+
+### Galois Field Polynomials
+```rust
+pub enum IrreduciblePoly {
+    AES,         // Use the standard AES polynomial (0x1b)
+    Custom(u8),  // Use a custom irreducible polynomial
+}
+```
+
+### Predefined Profiles
+```rust
+pub enum Profile {
+    Secure,    // Maximum security, CPU-based
+    Balanced,  // Balance between security and performance
+    Fast,      // Maximum performance, GPU-based when available
+}
+```
+
+### Nonce Types
+```rust
+pub enum NonceData {
+    TaggedNonce([u8; 32]),     // Nonce with user-provided tag
+    HashedNonce([u8; 32]),     // Cryptographically hashed nonce
+    Nonce([u8; 32]),           // Standard random nonce
+    MachineNonce([u8; 32]),    // Machine-specific nonce
+}
+```
+
+## Usage Examples
+
+### Basic Encryption/Decryption
+
+```rust
+use atom_crypte::{AtomCrypteBuilder, Config, Profile, Rng, Nonce};
+
+// Generate a nonce
+let nonce = Nonce::nonce(Rng::osrng());
+
+// Create a configuration with default settings
+let config = Config::default();
+
+// Encrypt data
+let encrypted = AtomCrypteBuilder::new()
+    .data("Hello, world!".as_bytes())
+    .password("secure_password")
+    .nonce(nonce)
+    .config(config)
+    .encrypt()
+    .expect("Encryption failed");
+
+// Decrypt data
+let decrypted = AtomCrypteBuilder::new()
+    .data(&encrypted)
+    .password("secure_password")
+    .nonce(nonce)
+    .config(config)
+    .decrypt()
+    .expect("Decryption failed");
+
+assert_eq!(decrypted, "Hello, world!".as_bytes());
+```
+
+### Custom Configuration
+
+```rust
+use atom_crypte::{AtomCrypteBuilder, Config, DeviceList, SboxTypes, IrreduciblePoly};
+
+// Create a custom configuration
+let config = Config::default()
+    .with_device(DeviceList::Gpu)              // Use GPU if available
+    .with_sbox(SboxTypes::PasswordAndNonceBased) // Use both password and nonce for S-box
+    .set_thread(8)                            // Use 8 threads
+    .gf_poly(IrreduciblePoly::Custom(0x4d));  // Use custom polynomial
+
+// Encryption using custom config
+// ...
+```
+
+### Using Predefined Profiles
+
+```rust
+use atom_crypte::{AtomCrypteBuilder, Config, Profile};
+
+// Create a configuration from a predefined profile
+let config = Config::from_profile(Profile::Fast);
+
+// Encryption using profile-based config
+// ...
+```
+
+### Machine-specific Encryption
+
+```rust
+use atom_crypte::{AtomCrypteBuilder, Config, Nonce};
+
+// Generate a machine-specific nonce
+let nonce = Nonce::machine_nonce(None); // or
+let nonce = Nonce::machine_nonce(Some(Rng::osrng()));
+
+let password = "your_password_here".machine_rng(); // machine special password
+
+// Encryption using machine-specific nonce
+// ...
+```
+
+## Performance
+
+AtomCrypte is designed for high performance with reasonable security margins:
+
+- **CPU Mode**: Efficiently utilizes all available cores via Rayon
+- **GPU Mode**: Leverages GPU acceleration for operations that benefit from parallelism
+- **Benchmark**: ~100MB Encrypt/Decrypt ~1s on average hardware
+
+## Security Considerations
+
+- Uses authenticated encryption with MAC validation
+- Implements constant-time operations to prevent timing attacks
+- Memory containing sensitive data is properly zeroized
+- Multiple cryptographic layers provide defense in depth !*/
+
 use argon2::{Argon2, password_hash::SaltString};
 use blake3::derive_key;
 use gpu::{dynamic_shift_gpu, dynamic_unshift_gpu};
@@ -10,20 +188,7 @@ pub mod gpu;
 
 static VERSION: &[u8] = b"atom-version:0x2";
 
-// # AtomCrypte Encryption Library
-// A multi-layered, secure encryption library combining:
-// - Blake3 hashing for fast and secure key derivation
-// - Argon2 for password-based key derivation
-// - Dynamic S-boxes for substitution operations
-// - Chunk-based data transformation
-// - Authenticated encryption with MAC validation
-// - Constant-time operations to prevent timing attacks
-// - Secure memory handling with zeroize
-//
-// This library implements a custom encryption protocol designed to provide
-// multiple layers of security through various cryptographic techniques.
-
-/// Represents different types of nonces used in the encryption process:
+/// Represents different types of nonces used in the encryption process.
 /// - TaggedNonce: Nonce combined with a user-provided tag
 /// - HashedNonce: Cryptographically hashed nonce for extra randomness
 /// - Nonce: Standard cryptographically secure random nonce
@@ -35,6 +200,10 @@ pub enum NonceData {
     MachineNonce([u8; 32]),
 } // Multiple data types for future usage
 
+/// Represents different types of errors that can occur during encryption or decryption.
+/// - This enum provides a comprehensive set of error types that can be encountered
+/// - during the encryption and decryption processes. Each error variant includes a
+/// - descriptive message that helps in identifying the root cause of the issue.
 #[derive(Debug, Error)]
 pub enum Errors {
     #[error("Decryption failed: {0}")]
@@ -55,6 +224,7 @@ pub enum Errors {
     BuildFailed(String),
 }
 
+/// Represents different types of devices that can be used for encryption and decryption.
 #[derive(Debug, Clone, Copy)]
 pub enum DeviceList {
     Auto,
@@ -62,6 +232,8 @@ pub enum DeviceList {
     Gpu,
 }
 
+/// Represents different types of sboxes that can be used for encryption and decryption.
+/// # Not recommended for use in production environments.
 #[derive(Debug, Clone, Copy)]
 pub enum SboxTypes {
     PasswordBased,
@@ -69,6 +241,7 @@ pub enum SboxTypes {
     PasswordAndNonceBased,
 }
 
+/// Represents different types of irreducible polynomials that can be used for encryption and decryption.
 #[derive(Debug, Clone, Copy)]
 pub enum IrreduciblePoly {
     AES,
@@ -84,6 +257,11 @@ impl IrreduciblePoly {
     }
 }
 
+/// Configuration for the encryption and decryption process.
+/// - `device`: The device to use for encryption.
+/// - `sbox`: The S-box to use for encryption.
+/// - `thread_num`: The number of threads to use for encryption.
+/// - `gf_poly`: The Galois field polynomial to use for encryption.
 #[derive(Debug, Clone, Copy)]
 pub struct Config {
     pub device: DeviceList,
@@ -92,6 +270,8 @@ pub struct Config {
     pub gf_poly: IrreduciblePoly,
 } // For feature use
 
+/// Profile for the encryption and decryption process.
+#[derive(Debug, Clone, Copy)]
 pub enum Profile {
     Secure,
     Balanced,
@@ -99,6 +279,7 @@ pub enum Profile {
 }
 
 impl Default for Config {
+    /// Default configuration for the encryption and decryption process.
     fn default() -> Self {
         Self {
             device: DeviceList::Cpu,
@@ -110,26 +291,35 @@ impl Default for Config {
 }
 
 impl Config {
+    /// Sets S-Box generation type for encryption and decryption.
+    /// - Not recommended changing the S-Box.
     pub fn with_sbox(mut self, sbox: SboxTypes) -> Self {
         self.sbox = sbox;
         self
     }
 
+    /// Sets the device to use for encryption and decryption.
+    /// - Not recommended changing the device after initialization.
     pub fn with_device(mut self, device: DeviceList) -> Self {
         self.device = device;
         self
     }
 
+    /// Sets the number of threads to use for encryption and decryption.
+    /// - Not recommended changing the number of threads after initialization.
     pub fn set_thread(mut self, num: usize) -> Self {
         self.thread_num = num;
         self
     }
 
+    /// Sets the Galois field polynomial to use for encryption and decryption.
+    /// - Not recommended changing the Galois field polynomial after initialization.
     pub fn gf_poly(mut self, poly: IrreduciblePoly) -> Self {
         self.gf_poly = poly;
         self
     }
 
+    /// Create a configuration from a profile.
     pub fn from_profile(profile: Profile) -> Self {
         match profile {
             Profile::Fast => Self {
@@ -156,6 +346,7 @@ impl Config {
 }
 
 impl NonceData {
+    /// Converts the nonce data into a byte array.
     pub fn as_bytes(&self) -> &[u8; 32] {
         match self {
             NonceData::Nonce(n)
@@ -164,6 +355,7 @@ impl NonceData {
             | NonceData::MachineNonce(n) => n,
         }
     }
+    /// Converts the nonce data into a vector of bytes.
     pub fn to_vec(&self) -> Vec<u8> {
         match self {
             NonceData::Nonce(n)
@@ -174,6 +366,7 @@ impl NonceData {
     }
 }
 
+/// Converts bytes or vector of bytes into a NonceData.
 pub trait AsNonce {
     fn as_nonce(&self) -> Result<NonceData, Errors>;
 }
@@ -210,24 +403,28 @@ impl TryFrom<Vec<u8>> for NonceData {
     }
 }
 
+/// Converts the bytes into a nonce data.
 impl AsNonce for [u8] {
     fn as_nonce(&self) -> Result<NonceData, Errors> {
         NonceData::try_from(self)
     }
 }
 
+/// Converts the bytes vector into a nonce data.
 impl AsNonce for Vec<u8> {
     fn as_nonce(&self) -> Result<NonceData, Errors> {
         NonceData::try_from(self.as_slice())
     }
 }
 
+/// Generates a random nonce using the operating system's random number generator.
 pub enum Rng {
     OsRngNonce([u8; 32]),
     TaggedOsRngNonce([u8; 32]),
 }
 
 impl Rng {
+    /// Generates a random nonce using the operating system's random number generator.
     pub fn osrng() -> Self {
         let mut nonce = [0u8; 32];
         OsRng
@@ -236,6 +433,7 @@ impl Rng {
         Self::OsRngNonce(nonce)
     }
 
+    /// Generates a random nonce using the operating system's random number generator, with a tag.
     pub fn tagged_osrng(tag: &[u8]) -> Self {
         let mut nonce = [0u8; 32];
         OsRng
@@ -254,21 +452,25 @@ impl Rng {
         Self::TaggedOsRngNonce(final_nonce)
     }
 
+    /// Returns the RNG as a byte slice.
     pub fn as_bytes(&self) -> &[u8; 32] {
         match &self {
             Self::OsRngNonce(a) | Self::TaggedOsRngNonce(a) => a,
         }
     }
 
+    /// Returns the RNG as a vector of bytes.
     pub fn to_vec(&self) -> Vec<u8> {
         self.as_bytes().to_vec()
     }
 }
 
+/// Generates a unique identifier based on the machine's configuration.
 pub trait MachineRng {
     fn machine_rng(&self) -> String;
 }
 
+/// Generates a unique identifier based on the machine's configuration.
 impl MachineRng for str {
     fn machine_rng(&self) -> String {
         let user_name = whoami::username();
@@ -288,6 +490,8 @@ impl MachineRng for str {
     }
 }
 
+/// ### Builder for AtomCrypte
+/// - You can encrypte & decrypte data using the builder.
 pub struct AtomCrypteBuilder {
     config: Option<Config>,
     data: Option<Vec<u8>>,
@@ -295,6 +499,7 @@ pub struct AtomCrypteBuilder {
     nonce: Option<NonceData>,
 }
 
+/// Generates a Unique Nonce
 pub struct Nonce;
 
 struct GaloisField {
@@ -302,6 +507,8 @@ struct GaloisField {
     inv_table: [u8; 256],
     irreducible_poly: u8,
 }
+
+// -----------------------------------------------------
 
 impl GaloisField {
     fn new(irreducible_poly: u8) -> Self {
@@ -316,15 +523,11 @@ impl GaloisField {
     }
 
     fn initialize_tables(&mut self) {
-        // Çarpma tablosunu hesaplama
         for i in 0..256 {
             for j in 0..256 {
                 self.mul_table[i][j] = self.multiply(i as u8, j as u8);
             }
         }
-
-        // Terslik tablosunu hesaplama
-        // 0'ın tersi yok, diğerleri için hesapla
         for i in 1..256 {
             for j in 1..256 {
                 if self.mul_table[i][j] == 1 {
@@ -371,6 +574,9 @@ impl GaloisField {
 }
 
 impl Nonce {
+    /// # Generates a Unique Nonce via Hash
+    /// - Recommended for use in most cases
+    /// - Adding extra security by hashing the nonce
     pub fn hashed_nonce(osrng: Rng) -> NonceData {
         let mut nonce = *osrng.as_bytes();
 
@@ -383,6 +589,9 @@ impl Nonce {
         NonceData::HashedNonce(nonce)
     }
 
+    /// # Generates a Unique Nonce via Tag and Hash
+    /// - Adding extra security by hashing the nonce
+    /// - Adding tag to the nonce (Extra Security)
     pub fn tagged_nonce(osrng: Rng, tag: &[u8]) -> NonceData {
         let mut nonce = *osrng.as_bytes();
 
@@ -395,6 +604,9 @@ impl Nonce {
         NonceData::TaggedNonce(*blake3::hash(&[&nonce, tag].concat()).as_bytes()) // Hash the nonce to get a 32 byte more random nonce (Extra Security)
     }
 
+    /// Generates a Unique Nonce via Machine Info and Hash
+    /// - Adding extra security by hashing the nonce
+    /// - Adding machine info to the nonce (Extra Security)
     pub fn machine_nonce(osrng: Option<Rng>) -> NonceData {
         let user_name = whoami::username();
         let device_name = whoami::devicename();
@@ -417,6 +629,8 @@ impl Nonce {
         NonceData::MachineNonce(*hash.as_bytes())
     }
 
+    /// Generates a unique Nonce
+    /// - Classic method with random bytes
     pub fn nonce(osrng: Rng) -> NonceData {
         let nonce = *osrng.as_bytes();
 
@@ -868,6 +1082,8 @@ fn auto_dynamic_chunk_unshift(
     }
 }
 
+// -----------------------------------------------------
+
 fn encrypt(
     password: &str,
     data: &[u8],
@@ -929,6 +1145,8 @@ fn encrypt(
 
     Ok(out_vec)
 }
+
+// -----------------------------------------------------
 
 fn decrypt(
     password: &str,
@@ -1018,6 +1236,7 @@ fn decrypt(
 }
 
 impl AtomCrypteBuilder {
+    /// Creates a new instance of AtomCrypteBuilder.
     pub fn new() -> Self {
         Self {
             password: None,
@@ -1027,26 +1246,40 @@ impl AtomCrypteBuilder {
         }
     }
 
+    /// Sets the data to be encrypted.
+    /// -  Recommended using '&' when using `Vector<u8>`.
     pub fn data(mut self, data: &[u8]) -> Self {
         self.data = Some(data.to_vec());
         self
     }
 
+    /// Sets the configuration for the encryption.
     pub fn config(mut self, config: Config) -> Self {
         self.config = Some(config);
         self
     }
 
+    /// Sets the password for the encryption.
     pub fn password(mut self, password: &str) -> Self {
         self.password = Some(password.to_string());
         self
     }
 
+    /// Sets the nonce for the encryption.
     pub fn nonce(mut self, nonce: NonceData) -> Self {
         self.nonce = Some(nonce);
         self
     }
 
+    /// Encrypts the data using the provided configuration, password, and nonce.
+    /// - Recommended using at the end of build.
+    ///
+    /// # Errors
+    /// Returns an error if any of the required fields are missing.
+    ///
+    /// # Recommendations
+    /// - Use a strong password.
+    /// - Use a unique nonce for each encryption.
     pub fn encrypt(self) -> Result<Vec<u8>, Errors> {
         let config = self
             .config
@@ -1064,6 +1297,15 @@ impl AtomCrypteBuilder {
         encrypt(password.as_str(), &data, nonce, config)
     }
 
+    /// Decrypts the data using the provided configuration, password, and nonce.
+    /// - Recommended using at the end of build.
+    /// - Recommended not using with encryption in same builder.
+    ///
+    /// # Errors
+    /// Returns an error if any of the required fields are missing.
+    ///
+    /// # Recommendations
+    /// - Renew the nonce after each decryption.
     pub fn decrypt(self) -> Result<Vec<u8>, Errors> {
         let config = self
             .config

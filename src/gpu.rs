@@ -2,6 +2,7 @@ use crate::{Errors, get_chunk_sizes};
 use blake3;
 use ocl::{Buffer, ProQue};
 
+/// Dynamic shift using GPU
 pub fn dynamic_shift_gpu(data: &[u8], nonce: &[u8], password: &[u8]) -> Result<Vec<u8>, Errors> {
     let src = include_str!("atom_gpu.cl");
 
@@ -97,6 +98,7 @@ pub fn dynamic_shift_gpu(data: &[u8], nonce: &[u8], password: &[u8]) -> Result<V
     Ok(out.iter().rev().cloned().collect::<Vec<u8>>())
 }
 
+/// Dynamic unshift using GPU
 pub fn dynamic_unshift_gpu(data: &[u8], nonce: &[u8], password: &[u8]) -> Result<Vec<u8>, Errors> {
     let src = include_str!("atom_gpu.cl");
     let data = data.iter().rev().cloned().collect::<Vec<u8>>();
