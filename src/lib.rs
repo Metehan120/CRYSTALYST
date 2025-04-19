@@ -709,27 +709,21 @@ fn inverse_triangle_mix_columns(
     Ok(data.to_vec())
 }
 
-fn xor_encrypt(nonce: &[u8], pwd: &[u8], input: &[u8], config: Config) -> Result<Vec<u8>, Errors> {
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(config.thread_num)
-        .build()
-        .map_err(|e| Errors::ThreadPool(e.to_string()))?;
-    let out = pool.install(|| {
-        input
-            .into_par_iter()
-            .enumerate()
-            .map(|(i, b)| {
-                let masked = b ^ (nonce[i % nonce.len()] ^ pwd[i % pwd.len()]); // XOR the byte with the nonce and password
-                let mut masked =
-                    masked.rotate_left((nonce[i % nonce.len()] ^ pwd[i % pwd.len()] % 8) as u32); // Rotate the byte left by the nonce value
+fn xor_encrypt(nonce: &[u8], pwd: &[u8], input: &[u8]) -> Result<Vec<u8>, Errors> {
+    let out = input
+        .into_par_iter()
+        .enumerate()
+        .map(|(i, b)| {
+            let masked = b ^ (nonce[i % nonce.len()] ^ pwd[i % pwd.len()]); // XOR the byte with the nonce and password
+            let mut masked =
+                masked.rotate_left((nonce[i % nonce.len()] ^ pwd[i % pwd.len()] % 8) as u32); // Rotate the byte left by the nonce value
 
-                masked = masked.wrapping_add(nonce[i % nonce.len()]); // Add the nonce to the byte
-                masked = masked.wrapping_add(pwd[i % pwd.len()]); // Add the password to the byte
+            masked = masked.wrapping_add(nonce[i % nonce.len()]); // Add the nonce to the byte
+            masked = masked.wrapping_add(pwd[i % pwd.len()]); // Add the password to the byte
 
-                masked
-            })
-            .collect::<Vec<u8>>()
-    });
+            masked
+        })
+        .collect::<Vec<u8>>();
 
     match out.is_empty() {
         true => return Err(Errors::InvalidXor("Empty vector".to_string())),
@@ -737,27 +731,20 @@ fn xor_encrypt(nonce: &[u8], pwd: &[u8], input: &[u8], config: Config) -> Result
     }
 }
 
-fn xor_decrypt(nonce: &[u8], pwd: &[u8], input: &[u8], config: Config) -> Result<Vec<u8>, Errors> {
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(config.thread_num)
-        .build()
-        .map_err(|e| Errors::ThreadPool(e.to_string()))?;
+fn xor_decrypt(nonce: &[u8], pwd: &[u8], input: &[u8]) -> Result<Vec<u8>, Errors> {
+    let out = input
+        .into_par_iter()
+        .enumerate()
+        .map(|(i, b)| {
+            let masked = b.wrapping_sub(pwd[i % pwd.len()]); // Subtract the password from the byte
+            let masked = masked.wrapping_sub(nonce[i % nonce.len()]); // Subtract the nonce from the byte
 
-    let out = pool.install(|| {
-        input
-            .into_par_iter()
-            .enumerate()
-            .map(|(i, b)| {
-                let masked = b.wrapping_sub(pwd[i % pwd.len()]); // Subtract the password from the byte
-                let masked = masked.wrapping_sub(nonce[i % nonce.len()]); // Subtract the nonce from the byte
+            let masked =
+                masked.rotate_right((nonce[i % nonce.len()] ^ pwd[i % pwd.len()] % 8) as u32); // Rotate the byte right by the nonce value
 
-                let masked =
-                    masked.rotate_right((nonce[i % nonce.len()] ^ pwd[i % pwd.len()] % 8) as u32); // Rotate the byte right by the nonce value
-
-                masked ^ (nonce[i % nonce.len()] ^ pwd[i % pwd.len()]) // XOR the byte with the nonce and password
-            })
-            .collect::<Vec<u8>>()
-    });
+            masked ^ (nonce[i % nonce.len()] ^ pwd[i % pwd.len()]) // XOR the byte with the nonce and password
+        })
+        .collect::<Vec<u8>>();
 
     match out.is_empty() {
         true => return Err(Errors::InvalidXor("Empty vector".to_string())), // If out vector is empty then returns an Error
@@ -1098,7 +1085,7 @@ fn encrypt(
     password.zeroize();
 
     let mut out_vec = Vec::new();
-    let encrypted_version = xor_encrypt(nonce, &pwd, VERSION, config)?;
+    let encrypted_version = xor_encrypt(nonce, &pwd, VERSION)?;
     out_vec.extend(encrypted_version);
 
     let mut s_block = generate_dynamic_sbox(nonce, &pwd, config);
@@ -1123,7 +1110,7 @@ fn encrypt(
     let crypted = shifted_data
         .par_chunks(dynamic_sizes(shifted_data.len()) as usize)
         .map(|data: &[u8]| {
-            xor_encrypt(nonce, &pwd, &data, config).map_err(|e| Errors::InvalidXor(e.to_string()))
+            xor_encrypt(nonce, &pwd, &data).map_err(|e| Errors::InvalidXor(e.to_string()))
         })
         .collect::<Result<Vec<Vec<u8>>, Errors>>()?
         .into_iter()
@@ -1134,7 +1121,7 @@ fn encrypt(
 
     let mac = *blake3::keyed_hash(
         blake3::hash(&crypted).as_bytes(),
-        &xor_encrypt(nonce, &pwd, &data, config)?,
+        &xor_encrypt(nonce, &pwd, &data)?,
     )
     .as_bytes(); // Generate a MAC for the data
 
@@ -1177,7 +1164,7 @@ fn decrypt(
     let (crypted, mac_key) = rest.split_at(rest.len() - 32);
 
     {
-        let version = xor_decrypt(nonce, &pwd, encrypted_version, config)?;
+        let version = xor_decrypt(nonce, &pwd, encrypted_version)?;
 
         if !version.starts_with(b"atom-version") {
             pwd.zeroize();
@@ -1189,7 +1176,7 @@ fn decrypt(
         .to_vec()
         .par_chunks_mut(dynamic_sizes(crypted.len()) as usize)
         .map(|data: &mut [u8]| {
-            xor_decrypt(nonce, &pwd, data, config).map_err(|e| Errors::InvalidXor(e.to_string()))
+            xor_decrypt(nonce, &pwd, data).map_err(|e| Errors::InvalidXor(e.to_string()))
         })
         .collect::<Result<Vec<Vec<u8>>, Errors>>()?
         .into_iter()
@@ -1221,7 +1208,7 @@ fn decrypt(
 
     let mac = blake3::keyed_hash(
         blake3::hash(&crypted).as_bytes(),
-        &xor_encrypt(nonce, &pwd, &decrypted_data, config)?,
+        &xor_encrypt(nonce, &pwd, &decrypted_data)?,
     ); // Generate a MAC for the data
 
     pwd.zeroize();
@@ -1234,6 +1221,8 @@ fn decrypt(
 
     Ok(decrypted_data)
 }
+
+// -----------------------------------------------------
 
 impl AtomCrypteBuilder {
     /// Creates a new instance of AtomCrypteBuilder.

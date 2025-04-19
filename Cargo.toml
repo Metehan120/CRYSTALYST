@@ -6,7 +6,6 @@ description = "A modern, flexible and 'EXPERIMENTAL' cryptographic library for R
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/Metehan120/AtomCrypte"
-license-file = "LICENSE"
 keywords = ["encryption", "crypto", "secure", "rust", "flex"]
 
 [dependencies]
