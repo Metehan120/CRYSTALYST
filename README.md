@@ -15,6 +15,7 @@ AtomCrypte is a robust encryption library that combines multiple cryptographic t
 
 ## Key Features
 
+- **Encryption Rounds**: Configurable number of rounds for encryption and decryption
 - **Multi-layered encryption architecture**: Combines multiple cryptographic primitives
 - **High performance**: Processes 100MB in approximately 1 seconds
 - **Parallelized operations**: Utilizes all available CPU cores via Rayon
@@ -33,6 +34,7 @@ AtomCrypte integrates several cryptographic primitives and techniques:
 - **Argon2**: For password-based key derivation with tunable parameters
 - **Dynamic S-boxes**: For substitution operations
 - **Galois Field Mathematics**: For efficient diffusion operations (similar to AES MixColumns)
+- **S-Box**: For confusion and diffusion
 - **MAC validation**: Ensures data integrity and authenticity
 
 ## Configuration Options
@@ -176,6 +178,7 @@ AtomCrypte is designed for high performance with reasonable security margins:
 - Implements constant-time operations to prevent timing attacks
 - Memory containing sensitive data is properly zeroized
 - Multiple cryptographic layers provide defense in depth
+- Using multiple rounds for increased security
 
 ---
 
