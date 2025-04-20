@@ -1,6 +1,7 @@
 # AtomCrypte
 
-A high-performance, multi-layered encryption library designed for flexibility, security, and speed.
+- A high-performance, multi-layered encryption library designed for flexibility, security, and speed.
+- You can find Threat Model on: [Threat Model](atomcrypte_threat_model.md)
 
 ---
 
