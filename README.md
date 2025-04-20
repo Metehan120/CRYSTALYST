@@ -195,4 +195,4 @@ AtomCrypte is designed for high performance with reasonable security margins:
 ## Credits
 
 - Developer: Metehan
-- E-Mail: metehanzafer@prpton.me
+- E-Mail: metehanzafer@proton.me
