@@ -1143,14 +1143,16 @@ fn encrypt(
     mixed_columns_data.zeroize();
 
     let mut crypted = Vec::new();
+    let mut round_data = shifted_data.to_vec();
+
     for i in 0..=config.rounds {
         let slice_end = std::cmp::min(i * 8, pwd.len());
         let key = blake3::hash(&pwd[..slice_end]);
 
         let key = *key.as_bytes();
 
-        let crypted_chunks = shifted_data
-            .par_chunks(dynamic_sizes(shifted_data.len()) as usize)
+        let crypted_chunks = round_data
+            .par_chunks(dynamic_sizes(round_data.len()) as usize)
             .map(|data: &[u8]| {
                 xor_encrypt(nonce, &key, &data).map_err(|e| Errors::InvalidXor(e.to_string()))
             })
@@ -1161,6 +1163,8 @@ fn encrypt(
 
         if i == config.rounds {
             crypted.extend(crypted_chunks);
+        } else {
+            round_data = crypted_chunks;
         }
     }
 
@@ -1220,16 +1224,17 @@ fn decrypt(
     }
 
     let mut xor_decrypted = Vec::new();
+    let mut round_data = Vec::from(crypted);
 
-    for i in 0..=config.rounds {
+    for i in (0..=config.rounds).rev() {
         let slice_end = std::cmp::min(i * 8, pwd.len());
         let key = blake3::hash(&pwd[..slice_end]);
 
         let key = *key.as_bytes();
 
-        let decrypted = crypted
+        let decrypted = round_data
             .to_vec()
-            .par_chunks_mut(dynamic_sizes(crypted.len()) as usize)
+            .par_chunks_mut(dynamic_sizes(round_data.len()) as usize)
             .map(|data: &mut [u8]| {
                 xor_decrypt(nonce, &key, data).map_err(|e| Errors::InvalidXor(e.to_string()))
             })
@@ -1238,8 +1243,10 @@ fn decrypt(
             .flatten()
             .collect::<Vec<u8>>();
 
-        if i == config.rounds {
+        if i == 0 {
             xor_decrypted.extend(decrypted);
+        } else {
+            round_data = decrypted
         }
     }
 
