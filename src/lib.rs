@@ -179,7 +179,7 @@ AtomCrypte is designed for high performance with reasonable security margins:
 use argon2::{Argon2, password_hash::SaltString};
 use blake3::derive_key;
 use gpu::{dynamic_shift_gpu, dynamic_unshift_gpu};
-use rand::{TryRngCore, rngs::OsRng};
+use rand::{RngCore, TryRngCore, random_range, rngs::OsRng};
 use rayon::prelude::*;
 use subtle::ConstantTimeEq;
 use thiserror::Error;
@@ -264,6 +264,7 @@ impl IrreduciblePoly {
 /// - `gf_poly`: The Galois field polynomial to use for encryption.
 #[derive(Debug, Clone, Copy)]
 pub struct Config {
+    pub rounds: usize,
     pub device: DeviceList,
     pub sbox: SboxTypes,
     pub thread_num: usize,
@@ -286,6 +287,7 @@ impl Default for Config {
             sbox: SboxTypes::PasswordAndNonceBased,
             thread_num: num_cpus::get(),
             gf_poly: IrreduciblePoly::AES,
+            rounds: 3,
         }
     }
 }
@@ -319,6 +321,24 @@ impl Config {
         self
     }
 
+    /// Sets the number of rounds to use for encryption and decryption.
+    /// - If you're using with version 0.2.0 data set this to 1.
+    /// - Not recommended changing the number of rounds after initialization.
+    pub fn rounds(mut self, num: usize) -> Self {
+        if num < 1 {
+            eprintln!("Round count too low. Automatically set to 1.");
+            self.rounds = 1;
+            return self;
+        } else if num > 3 {
+            eprintln!("Round count too high. Automatically set to 3.");
+            self.rounds = 3;
+            return self;
+        } else {
+            self.rounds = num;
+            self
+        }
+    }
+
     /// Create a configuration from a profile.
     pub fn from_profile(profile: Profile) -> Self {
         match profile {
@@ -327,6 +347,7 @@ impl Config {
                 sbox: SboxTypes::PasswordBased,
                 thread_num: num_cpus::get(),
                 gf_poly: IrreduciblePoly::AES,
+                rounds: 2,
             },
 
             Profile::Balanced => Self {
@@ -334,12 +355,14 @@ impl Config {
                 sbox: SboxTypes::PasswordAndNonceBased,
                 thread_num: num_cpus::get(),
                 gf_poly: IrreduciblePoly::AES,
+                rounds: 3,
             },
             Profile::Secure => Self {
                 device: DeviceList::Cpu,
                 sbox: SboxTypes::PasswordAndNonceBased,
                 thread_num: num_cpus::get(),
                 gf_poly: IrreduciblePoly::AES,
+                rounds: 3,
             },
         }
     }
@@ -421,9 +444,17 @@ impl AsNonce for Vec<u8> {
 pub enum Rng {
     OsRngNonce([u8; 32]),
     TaggedOsRngNonce([u8; 32]),
+    ThreadRngNonce([u8; 32]),
 }
 
 impl Rng {
+    /// Generates a random nonce using the machine's random number generator.
+    pub fn thread_rng() -> Self {
+        let mut nonce = [0u8; 32];
+        rand::rng().fill_bytes(&mut nonce);
+        Self::ThreadRngNonce(nonce)
+    }
+
     /// Generates a random nonce using the operating system's random number generator.
     pub fn osrng() -> Self {
         let mut nonce = [0u8; 32];
@@ -455,7 +486,7 @@ impl Rng {
     /// Returns the RNG as a byte slice.
     pub fn as_bytes(&self) -> &[u8; 32] {
         match &self {
-            Self::OsRngNonce(a) | Self::TaggedOsRngNonce(a) => a,
+            Self::OsRngNonce(a) | Self::TaggedOsRngNonce(a) | Self::ThreadRngNonce(a) => a,
         }
     }
 
@@ -579,8 +610,9 @@ impl Nonce {
     /// - Adding extra security by hashing the nonce
     pub fn hashed_nonce(osrng: Rng) -> NonceData {
         let mut nonce = *osrng.as_bytes();
+        let number: u8 = rand::random_range(0..255);
 
-        for i in 0..=4 {
+        for i in 0..=number {
             let mut mix = nonce.to_vec();
             mix.push(i as u8);
             nonce = *blake3::hash(&mix).as_bytes();
@@ -594,8 +626,9 @@ impl Nonce {
     /// - Adding tag to the nonce (Extra Security)
     pub fn tagged_nonce(osrng: Rng, tag: &[u8]) -> NonceData {
         let mut nonce = *osrng.as_bytes();
+        let number: u8 = rand::random_range(0..255);
 
-        for i in 0..=4 {
+        for i in 0..=number {
             let mut mix = nonce.to_vec();
             mix.push(i as u8);
             nonce = *blake3::hash(&mix).as_bytes();
@@ -633,13 +666,15 @@ impl Nonce {
     /// - Classic method with random bytes
     pub fn nonce(osrng: Rng) -> NonceData {
         let nonce = *osrng.as_bytes();
+        let number: u8 = random_range(0..255);
 
         let new_nonce_vec = nonce
             .iter()
             .enumerate()
             .map(|(i, b)| {
                 let add = (osrng.as_bytes()[i % osrng.as_bytes().len()] as usize) % (i + 1);
-                b.wrapping_add(add as u8)
+                let add = add as u8;
+                b.wrapping_add(add.wrapping_add(number))
             })
             .collect::<Vec<u8>>();
 
@@ -1107,15 +1142,27 @@ fn encrypt(
     s_block.zeroize();
     mixed_columns_data.zeroize();
 
-    let crypted = shifted_data
-        .par_chunks(dynamic_sizes(shifted_data.len()) as usize)
-        .map(|data: &[u8]| {
-            xor_encrypt(nonce, &pwd, &data).map_err(|e| Errors::InvalidXor(e.to_string()))
-        })
-        .collect::<Result<Vec<Vec<u8>>, Errors>>()?
-        .into_iter()
-        .flatten()
-        .collect::<Vec<u8>>();
+    let mut crypted = Vec::new();
+    for i in 0..=config.rounds {
+        let slice_end = std::cmp::min(i * 8, pwd.len());
+        let key = blake3::hash(&pwd[..slice_end]);
+
+        let key = *key.as_bytes();
+
+        let crypted_chunks = shifted_data
+            .par_chunks(dynamic_sizes(shifted_data.len()) as usize)
+            .map(|data: &[u8]| {
+                xor_encrypt(nonce, &key, &data).map_err(|e| Errors::InvalidXor(e.to_string()))
+            })
+            .collect::<Result<Vec<Vec<u8>>, Errors>>()?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<u8>>();
+
+        if i == config.rounds {
+            crypted.extend(crypted_chunks);
+        }
+    }
 
     shifted_data.zeroize();
 
@@ -1172,16 +1219,29 @@ fn decrypt(
         }
     }
 
-    let mut xor_decrypted = crypted
-        .to_vec()
-        .par_chunks_mut(dynamic_sizes(crypted.len()) as usize)
-        .map(|data: &mut [u8]| {
-            xor_decrypt(nonce, &pwd, data).map_err(|e| Errors::InvalidXor(e.to_string()))
-        })
-        .collect::<Result<Vec<Vec<u8>>, Errors>>()?
-        .into_iter()
-        .flatten()
-        .collect::<Vec<u8>>();
+    let mut xor_decrypted = Vec::new();
+
+    for i in 0..=config.rounds {
+        let slice_end = std::cmp::min(i * 8, pwd.len());
+        let key = blake3::hash(&pwd[..slice_end]);
+
+        let key = *key.as_bytes();
+
+        let decrypted = crypted
+            .to_vec()
+            .par_chunks_mut(dynamic_sizes(crypted.len()) as usize)
+            .map(|data: &mut [u8]| {
+                xor_decrypt(nonce, &key, data).map_err(|e| Errors::InvalidXor(e.to_string()))
+            })
+            .collect::<Result<Vec<Vec<u8>>, Errors>>()?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<u8>>();
+
+        if i == config.rounds {
+            xor_decrypted.extend(decrypted);
+        }
+    }
 
     let mut unshifted = auto_dynamic_chunk_unshift(
         &in_s_bytes(&xor_decrypted, nonce, &pwd, config)?,

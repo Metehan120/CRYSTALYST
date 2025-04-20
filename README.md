@@ -128,7 +128,8 @@ let config = Config::default()
     .with_device(DeviceList::Gpu)              // Use GPU if available
     .with_sbox(SboxTypes::PasswordAndNonceBased) // Use both password and nonce for S-box
     .set_thread(8)                            // Use 8 threads
-    .gf_poly(IrreduciblePoly::Custom(0x4d));  // Use custom polynomial
+    .gf_poly(IrreduciblePoly::Custom(0x4d)) // Use custom polynomial
+    .rounds(2); // Set number of rounds
 
 // Encryption using custom config
 // ...
