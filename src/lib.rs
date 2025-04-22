@@ -329,10 +329,6 @@ impl Config {
             eprintln!("Round count too low. Automatically set to 1.");
             self.rounds = 1;
             return self;
-        } else if num > 3 {
-            eprintln!("Round count too high. Automatically set to 3.");
-            self.rounds = 3;
-            return self;
         } else {
             self.rounds = num;
             self
@@ -498,22 +494,30 @@ impl Rng {
 
 /// Generates a unique identifier based on the machine's configuration.
 pub trait MachineRng {
-    fn machine_rng(&self) -> String;
+    fn machine_rng(&self, distro_lock: bool) -> String;
 }
 
 /// Generates a unique identifier based on the machine's configuration.
+/// Heads up:
+/// If you're migrating from version 2.2 or used machine_rng with distribution lock enabled,
+/// make sure to decrypt your data before changing or reinstalling your OS.
+/// The OS distribution is a part of the key derivation process when distro_lock is set to true.
+
+/// Failing to do so may permanently prevent access to your encrypted data.
 impl MachineRng for str {
-    fn machine_rng(&self) -> String {
+    fn machine_rng(&self, distro_lock: bool) -> String {
         let user_name = whoami::username();
         let device_name = whoami::devicename();
         let real_name = whoami::realname();
-        let distro = whoami::distro();
 
         let mut data = Vec::new();
         data.extend_from_slice(user_name.as_bytes());
         data.extend_from_slice(device_name.as_bytes());
         data.extend_from_slice(real_name.as_bytes());
-        data.extend_from_slice(distro.as_bytes());
+        if distro_lock == true {
+            let distro = whoami::distro();
+            data.extend_from_slice(distro.as_bytes());
+        }
         data.extend_from_slice(self.as_bytes());
 
         let hash = blake3::hash(&data);
@@ -537,6 +541,88 @@ struct GaloisField {
     mul_table: [[u8; 256]; 256],
     inv_table: [u8; 256],
     irreducible_poly: u8,
+}
+
+impl Nonce {
+    /// # Generates a Unique Nonce via Hash
+    /// - Recommended for use in most cases
+    /// - Adding extra security by hashing the nonce
+    pub fn hashed_nonce(osrng: Rng) -> NonceData {
+        let mut nonce = *osrng.as_bytes();
+        let number: u8 = rand::random_range(0..255);
+
+        for i in 0..=number {
+            let mut mix = nonce.to_vec();
+            mix.push(i as u8);
+            nonce = *blake3::hash(&mix).as_bytes();
+        }
+
+        NonceData::HashedNonce(nonce)
+    }
+
+    /// # Generates a Unique Nonce via Tag and Hash
+    /// - Adding extra security by hashing the nonce
+    /// - Adding tag to the nonce (Extra Security)
+    pub fn tagged_nonce(osrng: Rng, tag: &[u8]) -> NonceData {
+        let mut nonce = *osrng.as_bytes();
+        let number: u8 = rand::random_range(0..255);
+
+        for i in 0..=number {
+            let mut mix = nonce.to_vec();
+            mix.push(i as u8);
+            nonce = *blake3::hash(&mix).as_bytes();
+        }
+
+        NonceData::TaggedNonce(*blake3::hash(&[&nonce, tag].concat()).as_bytes()) // Hash the nonce to get a 32 byte more random nonce (Extra Security)
+    }
+
+    /// Generates a Unique Nonce via Machine Info and Hash
+    /// This nonce must be saved along with the encrypted data.
+    /// - Adding extra security by hashing the nonce
+    /// - Adding machine info to the nonce (Extra Security)
+    pub fn machine_nonce(osrng: Option<Rng>) -> NonceData {
+        let user_name = whoami::username();
+        let device_name = whoami::devicename();
+        let real_name = whoami::realname();
+        let distro = whoami::distro();
+
+        let mut all_data = Vec::new();
+
+        all_data.extend_from_slice(user_name.as_bytes());
+        all_data.extend_from_slice(device_name.as_bytes());
+        all_data.extend_from_slice(real_name.as_bytes());
+        all_data.extend_from_slice(distro.as_bytes());
+
+        if let Some(rng) = osrng {
+            all_data.extend_from_slice(rng.as_bytes());
+        }
+
+        let hash = blake3::hash(&all_data);
+
+        NonceData::MachineNonce(*hash.as_bytes())
+    }
+
+    /// Generates a unique Nonce
+    /// - Classic method with random bytes
+    pub fn nonce(osrng: Rng) -> NonceData {
+        let nonce = *osrng.as_bytes();
+        let number: u8 = random_range(0..255);
+
+        let new_nonce_vec = nonce
+            .iter()
+            .enumerate()
+            .map(|(i, b)| {
+                let add = (osrng.as_bytes()[i % osrng.as_bytes().len()] as usize) % (i + 1);
+                let add = add as u8;
+                b.wrapping_add(add.wrapping_add(number))
+            })
+            .collect::<Vec<u8>>();
+
+        let mut new_nonce = [0u8; 32];
+        new_nonce.copy_from_slice(&new_nonce_vec[..32]);
+
+        NonceData::Nonce(new_nonce)
+    }
 }
 
 // -----------------------------------------------------
@@ -597,91 +683,10 @@ impl GaloisField {
 
     fn inverse(&self, a: u8) -> Option<u8> {
         if a == 0 {
-            None // 0'ın tersi yoktur
+            None
         } else {
             Some(self.inv_table[a as usize])
         }
-    }
-}
-
-impl Nonce {
-    /// # Generates a Unique Nonce via Hash
-    /// - Recommended for use in most cases
-    /// - Adding extra security by hashing the nonce
-    pub fn hashed_nonce(osrng: Rng) -> NonceData {
-        let mut nonce = *osrng.as_bytes();
-        let number: u8 = rand::random_range(0..255);
-
-        for i in 0..=number {
-            let mut mix = nonce.to_vec();
-            mix.push(i as u8);
-            nonce = *blake3::hash(&mix).as_bytes();
-        }
-
-        NonceData::HashedNonce(nonce)
-    }
-
-    /// # Generates a Unique Nonce via Tag and Hash
-    /// - Adding extra security by hashing the nonce
-    /// - Adding tag to the nonce (Extra Security)
-    pub fn tagged_nonce(osrng: Rng, tag: &[u8]) -> NonceData {
-        let mut nonce = *osrng.as_bytes();
-        let number: u8 = rand::random_range(0..255);
-
-        for i in 0..=number {
-            let mut mix = nonce.to_vec();
-            mix.push(i as u8);
-            nonce = *blake3::hash(&mix).as_bytes();
-        }
-
-        NonceData::TaggedNonce(*blake3::hash(&[&nonce, tag].concat()).as_bytes()) // Hash the nonce to get a 32 byte more random nonce (Extra Security)
-    }
-
-    /// Generates a Unique Nonce via Machine Info and Hash
-    /// - Adding extra security by hashing the nonce
-    /// - Adding machine info to the nonce (Extra Security)
-    pub fn machine_nonce(osrng: Option<Rng>) -> NonceData {
-        let user_name = whoami::username();
-        let device_name = whoami::devicename();
-        let real_name = whoami::realname();
-        let distro = whoami::distro();
-
-        let mut all_data = Vec::new();
-
-        all_data.extend_from_slice(user_name.as_bytes());
-        all_data.extend_from_slice(device_name.as_bytes());
-        all_data.extend_from_slice(real_name.as_bytes());
-        all_data.extend_from_slice(distro.as_bytes());
-
-        if let Some(rng) = osrng {
-            all_data.extend_from_slice(rng.as_bytes());
-        }
-
-        let hash = blake3::hash(&all_data);
-
-        NonceData::MachineNonce(*hash.as_bytes())
-    }
-
-    /// Generates a unique Nonce
-    /// - Classic method with random bytes
-    pub fn nonce(osrng: Rng) -> NonceData {
-        let nonce = *osrng.as_bytes();
-        let number: u8 = random_range(0..255);
-
-        let new_nonce_vec = nonce
-            .iter()
-            .enumerate()
-            .map(|(i, b)| {
-                let add = (osrng.as_bytes()[i % osrng.as_bytes().len()] as usize) % (i + 1);
-                let add = add as u8;
-                b.wrapping_add(add.wrapping_add(number))
-            })
-            .collect::<Vec<u8>>();
-
-        let mut new_nonce = [0u8; 32];
-        new_nonce.copy_from_slice(&new_nonce_vec[..32]);
-
-        NonceData::Nonce(new_nonce)
     }
 }
 
