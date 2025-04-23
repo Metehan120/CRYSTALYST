@@ -1367,7 +1367,7 @@ fn decrypt(
     let version_2 = xor_decrypt(nonce_byte, &pwd, encrypted_version)?;
 
     if !version.starts_with(b"atom-version") || !version_2.starts_with(b"atom-version") {
-        if version.starts_with(b"atom-version") {
+        if version.starts_with(b"atom-version") || version_2.starts_with(b"atom-version") {
         } else {
             pwd.zeroize();
             return Err(Errors::InvalidAlgorithm);
