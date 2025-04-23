@@ -1,7 +1,9 @@
 # AtomCrypte
+📢 Latest Major Release: [v0.3.0 - Secure Evolution](CHANGELOGS.md)
 
 - A high-performance, multi-layered encryption library designed for flexibility, security, and speed.
-- You can find Threat Model on: [Threat Model](atomcrypte_threat_model.md)
+- You can find the Threat Model here: [Threat Model](atomcrypte_threat_model.md)
+- You can find changelogs here: [Changelogs](CHANGELOGS.md)
 
 ---
 
@@ -12,185 +14,182 @@ This project is experimental and should not be used in production systems. It is
 
 ## Overview
 
-AtomCrypte is a robust encryption library that combines multiple cryptographic techniques to provide state-of-the-art security with configurable parameters. By leveraging parallel processing capabilities and GPU acceleration, AtomCrypte achieves excellent performance while maintaining a high security standard.
+AtomCrypte is a robust encryption library that combines multiple cryptographic techniques to provide state-of-the-art security with configurable parameters. It supports parallel processing, GPU acceleration, and modular cryptographic components, enabling both performance and advanced customization.
 
 ## Key Features
 
-- **Encryption Rounds**: Configurable number of rounds for encryption and decryption
-- **Multi-layered encryption architecture**: Combines multiple cryptographic primitives
-- **High performance**: Processes 100MB in approximately 1 seconds
-- **Parallelized operations**: Utilizes all available CPU cores via Rayon
-- **GPU acceleration**: Optional GPU-based processing for higher performance
-- **Galois Field mathematics**: Configurable finite field operations
-- **Dynamic S-boxes**: Password and/or nonce-dependent substitution tables
-- **Authenticated encryption**: MAC validation ensures data integrity
-- **Constant-time operations**: Protection against timing attacks
-- **Secure memory handling**: Sensitive data is properly zeroized from memory
+- **Salt Support**: Cryptographic salt generation using `Salt::new()` to prevent rainbow table attacks
+- **Infinite Rounds**: User-defined encryption round count
+- **Wrap-All Support**: Seamlessly wraps salt, nonce, version, etc. into final output
+- **MAC with SHA3-512**: Strong integrity validation and quantum resistance
+- **Benchmark Support**: Time encryption/decryption operations with `.benchmark()`
+- **Secure Key Derivation**: Argon2 + Blake3 for password hashing
+- **Dynamic S-boxes**: Based on password, nonce or both
+- **Finite Field Arithmetic**: Galois Field operations similar to AES MixColumns
+- **Parallel Processing**: Uses Rayon for multicore CPU support
+- **GPU Acceleration**: OpenCL backend for fast encryption/decryption
+- **Zeroized Memory**: Automatic clearing of sensitive data in RAM
 
 ## Cryptographic Components
 
-AtomCrypte integrates several cryptographic primitives and techniques:
+AtomCrypte integrates the following primitives and concepts:
 
-- **Blake3**: For fast and secure key derivation
-- **Argon2**: For password-based key derivation with tunable parameters
-- **Dynamic S-boxes**: For substitution operations
-- **Galois Field Mathematics**: For efficient diffusion operations (similar to AES MixColumns)
-- **S-Box**: For confusion and diffusion
-- **MAC validation**: Ensures data integrity and authenticity
+- **Argon2**: Memory-hard password hashing
+- **Blake3**: Fast cryptographic hash for key derivation
+- **SHA3-512**: Default MAC function with post-quantum resilience
+- **Custom S-box**: Deterministic but unique per configuration
+- **Galois Field**: MixColumns-like transformation layer
+- **MAC Validation**: Ensures authenticity and tamper-resistance
 
 ## Configuration Options
 
-AtomCrypte is highly configurable, allowing users to tailor encryption to their specific needs:
+AtomCrypte is highly configurable. Below are common customization options:
 
 ### Device Selection
 ```rust
 pub enum DeviceList {
-    Auto,   // Automatically choose between CPU and GPU based on availability
-    Cpu,    // Force CPU-based processing
-    Gpu,    // Force GPU-based processing
+    Auto,
+    Cpu,
+    Gpu,
 }
 ```
 
 ### S-box Generation
 ```rust
 pub enum SboxTypes {
-    PasswordBased,         // Generate S-box based on password only
-    NonceBased,            // Generate S-box based on nonce only
-    PasswordAndNonceBased, // Generate S-box based on both password and nonce
+    PasswordBased,
+    NonceBased,
+    PasswordAndNonceBased,
 }
 ```
 
-### Galois Field Polynomials
+### Galois Field Polynomial
 ```rust
 pub enum IrreduciblePoly {
-    AES,         // Use the standard AES polynomial (0x1b)
-    Custom(u8),  // Use a custom irreducible polynomial
+    AES,
+    Custom(u8),
 }
 ```
 
 ### Predefined Profiles
 ```rust
 pub enum Profile {
-    Secure,    // Maximum security, CPU-based
-    Balanced,  // Balance between security and performance
-    Fast,      // Maximum performance, GPU-based when available
+    Secure,
+    Balanced,
+    Fast,
 }
 ```
 
 ### Nonce Types
 ```rust
 pub enum NonceData {
-    TaggedNonce([u8; 32]),     // Nonce with user-provided tag
-    HashedNonce([u8; 32]),     // Cryptographically hashed nonce
-    Nonce([u8; 32]),           // Standard random nonce
-    MachineNonce([u8; 32]),    // Machine-specific nonce
+    TaggedNonce([u8; 32]),
+    HashedNonce([u8; 32]),
+    Nonce([u8; 32]),
+    MachineNonce([u8; 32]),
 }
 ```
 
 ## Usage Examples
 
 ### Basic Encryption/Decryption
-
 ```rust
 use atom_crypte::{AtomCrypteBuilder, Config, Profile, Rng, Nonce};
 
-// Generate a nonce
 let nonce = Nonce::nonce(Rng::osrng());
-
-// Create a configuration with default settings
 let config = Config::default();
 
-// Encrypt data
 let encrypted = AtomCrypteBuilder::new()
     .data("Hello, world!".as_bytes())
     .password("secure_password")
     .nonce(nonce)
     .config(config)
+    .wrap_all(true) // Optional
+    .benchmark() // Optional
     .encrypt()
     .expect("Encryption failed");
 
-// Decrypt data
 let decrypted = AtomCrypteBuilder::new()
     .data(&encrypted)
     .password("secure_password")
-    .nonce(nonce)
     .config(config)
+    .wrap_all(true) // Optional
+    .benchmark() // Optional
     .decrypt()
     .expect("Decryption failed");
 
 assert_eq!(decrypted, "Hello, world!".as_bytes());
 ```
+### How to use salt
+```rust
+let salt = Salt::new();
+let encrypted = AtomCrypteBuilder::new()
+    .data("Important secrets".as_bytes())
+    .password("your_password")
+    .nonce(Nonce::nonce(Rng::osrng()))
+    .config(Config::default())
+    .wrap_all(true) // Optional
+    .salt(salt) // Optional but recommended
+    .benchmark() // Optional
+    .encrypt()
+    .expect("Encryption failed");
+
+// Or you can turn byte slice into Salt
+```
 
 ### Custom Configuration
-
+- 🚧 - 🚧 If you forget your configuration, you won't be able to decrypt the data. (Especially important if you changed round count, S-box type, or polynomial.)
 ```rust
 use atom_crypte::{AtomCrypteBuilder, Config, DeviceList, SboxTypes, IrreduciblePoly};
 
-// Create a custom configuration
 let config = Config::default()
-    .with_device(DeviceList::Gpu)              // Use GPU if available
-    .with_sbox(SboxTypes::PasswordAndNonceBased) // Use both password and nonce for S-box
-    .set_thread(8)                            // Use 8 threads
-    .gf_poly(IrreduciblePoly::Custom(0x4d)) // Use custom polynomial
-    .rounds(2); // Set number of rounds
-
-// Encryption using custom config
-// ...
+    .with_device(DeviceList::Gpu)
+    .with_sbox(SboxTypes::PasswordAndNonceBased)
+    .set_thread(4)
+    .gf_poly(IrreduciblePoly::Custom(0x4d))
+    .rounds(6); // 4 Rounds recommended
 ```
 
 ### Using Predefined Profiles
-
 ```rust
 use atom_crypte::{AtomCrypteBuilder, Config, Profile};
 
-// Create a configuration from a predefined profile
 let config = Config::from_profile(Profile::Fast);
-
-// Encryption using profile-based config
-// ...
 ```
 
 ### Machine-specific Encryption
-
 ```rust
 use atom_crypte::{AtomCrypteBuilder, Config, Nonce};
 
-// Generate a machine-specific nonce
-let nonce = Nonce::machine_nonce(None); // or
-let nonce = Nonce::machine_nonce(Some(Rng::osrng()));
-
-let password = "your_password_here".machine_rng(); // machine special password
-
-// Encryption using machine-specific nonce
-// ...
+let nonce = Nonce::machine_nonce(None); // You can generate via Machine info + Rng
+let password = "your_password_here".machine_rng(false); // False means no distro lock
 ```
 
 ## Performance
 
-AtomCrypte is designed for high performance with reasonable security margins:
-
-- **CPU Mode**: Efficiently utilizes all available cores via Rayon
-- **GPU Mode**: Leverages GPU acceleration for operations that benefit from parallelism
-- **Benchmark**: ~100MB Encrypt/Decrypt ~1s on average hardware
+- **CPU**: Parallelized via Rayon
+- **GPU**: OpenCL enabled
+- **Benchmarks**: ~100MB ≈ 1s encryption/decryption on avarage device
 
 ## Security Considerations
 
-- Uses authenticated encryption with MAC validation
-- Implements constant-time operations to prevent timing attacks
-- Memory containing sensitive data is properly zeroized
-- Multiple cryptographic layers provide defense in depth
-- Using multiple rounds for increased security
+- Constant-time comparisons
+- Memory zeroization
+- Authenticated encryption with SHA3 MAC
+- Configurable number of layers and rounds
+- Defense-in-depth: multiple cryptographic operations layered
 
 ---
 
-## 💡 Roadmap (Planned Features)
+## 💡 Roadmap
 
+- Kyber (PQC) integration
 - Recovery key fallback
 - Machine-level access controls
 
 ## License
 
-[`MIT License`](LICENSE). This project is for research and educational use. Not recommended for production environments without a formal audit.
+[MIT License](LICENSE)
 
 ## Credits
 

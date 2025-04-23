@@ -1,93 +1,94 @@
-# AtomCrypte Threat Model (v0.2.1)
+# AtomCrypte Threat Model (v0.3.0)
 
 ## 🛡️ Purpose
 
 AtomCrypte is a high-performance, multi-layered, configurable encryption library written in Rust.
-It aims to provide robust data confidentiality and integrity using custom cryptographic techniques.
+It aims to provide robust data confidentiality and integrity using modern and custom cryptographic techniques, including quantum-resilient MAC generation and GPU acceleration.
 
 ---
 
 ## ⚠️ Scope & Limitations
 
-- Intended for file or text-based data encryption
-- Not designed for direct network-level encryption
-- Key and nonce management is left to the user
-- Not compatible with legacy versions due to changing encryption structure
-- Not recommended for production use — experimental and research-focused
+- Intended for file or data-at-rest encryption
+- Not yet optimized for streaming or network-level encryption
+- Key, nonce, and salt management is delegated to the user (unless wrapped)
+- Not compatible with legacy versions due to evolving structure and MAC changes
+- Experimental — not production-ready without formal audit
 
 ---
 
 ## 🧨 Threat Types
 
-| Threat                          | Description |
-|----------------------------------|-------------|
-| Brute Force Attack              | Mitigated by Argon2 + Blake3 KDF |
-| Known-Plaintext Attack (KPA)    | Dynamic nonce usage makes block correlation very difficult |
-| Ciphertext-only Attack (COA)    | Encryption rounds + dynamic keys prevent analysis |
-| Timing Attack                   | Constant-time operations used (`ct_eq`) |
-| Side-channel Attack             | No hardware mitigation; constant-time software level only |
-| Replay Attack                   | Prevented via nonce and MAC |
-| Key Reuse                       | Can be risky if the same nonce is used with same key |
-| Data Tampering                  | Detected via Blake3 MAC |
-| Weak Key Derivation             | Argon2 with salt ensures high entropy |
+| Threat                          | Mitigation Strategy |
+|----------------------------------|----------------------|
+| Brute Force Attack              | Argon2 + Blake3-based key derivation with salt support |
+| Known-Plaintext Attack (KPA)    | Nonce and round structure disrupts pattern matching |
+| Ciphertext-only Attack (COA)    | Dynamic multi-round XOR with key rotation |
+| Timing Attack                   | Constant-time comparisons used (`ct_eq`) |
+| Side-channel Attack             | Software-level only; hardware not mitigated |
+| Replay Attack                   | Prevented via nonce uniqueness and MAC binding |
+| Key Reuse                       | Secure if nonce and salt are unique; user responsibility |
+| Data Tampering                  | SHA3-512 |
+| Weak Key Derivation             | Argon2 ensures high computational cost for attackers |
 
 ---
 
 ## 🛡️ Defense Mechanisms
 
-| Area                  | Strategy |
-|------------------------|----------|
-| Key Derivation         | Argon2 + Blake3 with salt |
-| Data Integrity         | Blake3 keyed MAC |
-| Memory Safety          | `zeroize` crate used to clear sensitive data |
-| Nonce Generation       | OS RNG, thread RNG, tagged and machine-based |
-| S-box Security         | Dynamic S-box generated per encryption session |
-| Round Logic            | Each round uses different derived keys |
-| Configuration          | Controlled via user-defined `Config` struct |
+| Component             | Security Feature |
+|------------------------|-------------------|
+| Key Derivation         | Argon2 + Blake3 with optional salt |
+| Data Integrity         | SHA3-512 (v0.3) MAC for post-quantum resilience |
+| Memory Safety          | Uses `zeroize` to wipe secrets from memory |
+| Nonce Generation       | Multiple nonce types (machine, tagged, hashed) |
+| S-box Security         | Dynamic S-box generated per session using password & nonce |
+| Round Logic            | Round-based XOR with rolling keys and mix-columns-like layers |
+| Configuration Handling | User-defined Config, must match for decryption |
 
 ---
 
 ## 🧪 Assumptions
 
-- Strong, unique password is used
-- Nonce is different for every encryption
-- Salt is securely stored or embedded safely
-- Code is executed in a trusted environment
-- Experimental — not production-ready
+- Unique, strong password is used per encryption
+- Salt is securely generated and wrapped or stored
+- Nonce is never reused for the same key
+- Decryption environment is trusted and local
+- Config is retained correctly by the user (wrap_all recommended)
 
 ---
 
 ## 📊 Example Attack Scenarios
 
-| Scenario                  | Outcome |
-|----------------------------|---------|
-| Same data + same password | Different output (due to nonce) |
-| Missing MAC               | Decryption fails |
-| Nonce reuse               | Repeated encryption is susceptible |
-| Incorrect GF polynomial   | May reduce diffusion efficiency |
-| Tampering with rounds     | Skipping rounds breaks decryption |
+| Scenario                      | Outcome |
+|-------------------------------|---------|
+| Same data + same password     | Unique ciphertext due to nonce/salt |
+| Tampered MAC                 | Decryption fails with InvalidMac error |
+| Nonce reuse                  | Can weaken security under specific conditions |
+| Incorrect Config on decrypt  | Fails — Config-dependent structure |
+| Skipped rounds               | Breaks decryption logic and fails |
 
 ---
 
 ## ✅ Recommendations
 
-- Use at least 3 rounds
-- Always use 32-byte passwords
-- Never reuse a nonce
-- Verify MAC on decryption
-- Do not use in production unless externally audited
+- Use at least 3–6 rounds for secure mode
+- Prefer SHA3 MAC (enabled by default in v0.3)
+- Always use `.wrap_all(true)` in production-like tests
+- Never reuse nonce + password + salt combinations
+- Securely store or wrap the Config if custom settings are used
 
 ---
 
 ## 🔚 Summary
 
-AtomCrypte is:
+AtomCrypte (v0.3) is:
 
-- A secure-by-design experimental encryption engine
-- Highly configurable, nonce/key sensitive
-- Best suited for cryptography enthusiasts, researchers, and custom systems
+- Secure-by-design with strong KDF and MAC structure
+- Modular, parallelized, and optionally GPU-accelerated
+- Configurable for various use cases and layered encryption needs
+- Post-quantum aware thanks to SHA3 and future Kyber integration
 
-**Note:** Misuse of configurations (e.g., low rounds, reused nonce) can weaken security drastically.
+**Note:** This library is experimental. Improper configuration or reuse of sensitive values (e.g., nonce, salt) may significantly degrade security.
 
 ---
 
