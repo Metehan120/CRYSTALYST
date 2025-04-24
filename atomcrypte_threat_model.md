@@ -86,7 +86,6 @@ AtomCrypte (v0.3) is:
 - Secure-by-design with strong KDF and MAC structure
 - Modular, parallelized, and optionally GPU-accelerated
 - Configurable for various use cases and layered encryption needs
-- Post-quantum aware thanks to SHA3 and future Kyber integration
 
 **Note:** This library is experimental. Improper configuration or reuse of sensitive values (e.g., nonce, salt) may significantly degrade security.
 
