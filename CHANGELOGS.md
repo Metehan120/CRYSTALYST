@@ -1,3 +1,39 @@
+# AtomCrypte v0.4.0 - "Steps Toward"
+## New Features
+
+### 1. 512-bit Key Support
+- Maximum entropy, post-quantum resilience
+- You can generate 512-bit keys using `Config::/*Your Config*/.key_length(KeyLength::Key512)` or `Config::from_profile(Profile::Secure) / Config::from_profile(Profile::Max)`.
+
+### 2. New Profile Setting:
+- Added `Profile::Max` to Maximize encryption parameters.
+- Using `Key512` and `20 Rounds` for Maximum security.
+- This option will be `very heavy`.
+
+### 3. Password Length Checking (Non User-Important)
+- Checking if length is 0;
+- Prevents weak passwords from being used.
+
+### 4. AsBase64 Encoding
+- Converts encrypted data to Base64 format for easier handling and transmission.
+- You can convert via `.as_base64()`.
+
+### 5. AsString Encoding
+- Converts encrypted data to String format for easier look.
+- You can convert via `.as_string()`.
+- `Intended for debugging and visual inspection only. Not for saving data`.
+
+### 6. Better Seeds via Key512
+- Utilizes the full 512-bit key for generating seeds, ensuring a more secure and unpredictable seed generation process.
+- Improved seed generation algorithm for better randomness and security.
+
+### Fixes and Improvements
+1. Small performance improvements.
+2. Fixed benchmarks on Encrypt and Decrypt named same (`Encryption took...`).
+3. Code base refactored.
+
+---
+
 # AtomCrypte v0.3.0 - "Secure Evolution"
 ## New Features
 
@@ -39,5 +75,6 @@
 ---
 
 Note:
-v0.3.0 marks the start of **quantum-resilient design shift**.
-The next version (v0.4+) will focus on further optimizations, better abstraction, and Kyber integration.
+v0.4.0 marks the start of **quantum-resilient design shift**.
+
+The next version (v0.5+) will focus on further optimizations, better abstraction, and Kyber integration.

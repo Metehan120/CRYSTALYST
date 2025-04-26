@@ -179,6 +179,7 @@ let password = "your_password_here".machine_rng(false); // False means no distro
 use std::time::Instant;
 
 use argon2::{Argon2, password_hash::SaltString};
+use base64::{Engine, prelude::BASE64_STANDARD};
 use blake3::derive_key;
 use gpu::{dynamic_shift_gpu, dynamic_unshift_gpu};
 use rand::{RngCore, TryRngCore, random_range, rngs::OsRng};
@@ -189,7 +190,7 @@ use thiserror::Error;
 use zeroize::Zeroize;
 pub mod gpu;
 
-static VERSION: &[u8] = b"atom-version:0x3";
+static VERSION: &[u8] = b"atom-version:0x4";
 
 /// Represents different types of nonces used in the encryption process.
 /// - TaggedNonce: Nonce combined with a user-provided tag
@@ -225,6 +226,10 @@ pub enum Errors {
     KernelError(String),
     #[error("Build Failed: {0}")]
     BuildFailed(String),
+    #[error("Empty Password")]
+    EmptyPassword,
+    #[error("Invalid Password Length, at least need to be 16 bytes")]
+    InvalidPasswordLength,
 }
 
 /// Represents different types of devices that can be used for encryption and decryption.
@@ -260,6 +265,12 @@ impl IrreduciblePoly {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyLength {
+    Key256,
+    Key512,
+}
+
 /// Configuration for the encryption and decryption process.
 /// - `device`: The device to use for encryption.
 /// - `sbox`: The S-box to use for encryption.
@@ -272,11 +283,17 @@ pub struct Config {
     pub sbox: SboxTypes,
     pub thread_num: usize,
     pub gf_poly: IrreduciblePoly,
+    pub key_length: KeyLength,
 } // For feature use
 
 /// Profile for the encryption and decryption process.
+/// - `max`: Maximum security level, can be good against quantum attacks.
+/// - `secure`: Secure security level.
+/// - `balanced`: Balanced security level.
+/// - `fast`: Fast security level.
 #[derive(Debug, Clone, Copy)]
 pub enum Profile {
+    Max,
     Secure,
     Balanced,
     Fast,
@@ -284,13 +301,16 @@ pub enum Profile {
 
 impl Default for Config {
     /// Default configuration for the encryption and decryption process.
+    /// For compatibility with older versions set round to 3.
+    /// For compatibility with older versions set key length to 256 bits.
     fn default() -> Self {
         Self {
             device: DeviceList::Cpu,
             sbox: SboxTypes::PasswordAndNonceBased,
             thread_num: num_cpus::get(),
             gf_poly: IrreduciblePoly::AES,
-            rounds: 3,
+            rounds: 6,
+            key_length: KeyLength::Key512,
         }
     }
 }
@@ -324,6 +344,13 @@ impl Config {
         self
     }
 
+    /// Sets the key length to use for encryption and decryption.
+    /// - Recommended Key512 for security.
+    pub fn key_length(mut self, length: KeyLength) -> Self {
+        self.key_length = length;
+        self
+    }
+
     /// Sets the number of rounds to use for encryption and decryption.
     /// - If you're using with version 0.2.0 data set this to 1.
     /// - Not recommended changing the number of rounds after initialization.
@@ -338,7 +365,10 @@ impl Config {
         }
     }
 
-    /// Create a configuration from a profile.
+    /// Create a configuration from a profile
+    /// For compatibility on fast profile with older versions set round to 2.
+    /// For compatibility on balanced profile with older versions set round to 3 and key length to Key256.
+    /// For compatibility on secure profile with older versions set round to 3 and KeyLength to Key256.
     pub fn from_profile(profile: Profile) -> Self {
         match profile {
             Profile::Fast => Self {
@@ -346,22 +376,32 @@ impl Config {
                 sbox: SboxTypes::PasswordBased,
                 thread_num: num_cpus::get(),
                 gf_poly: IrreduciblePoly::AES,
-                rounds: 2,
+                rounds: 3,
+                key_length: KeyLength::Key256,
             },
-
             Profile::Balanced => Self {
                 device: DeviceList::Auto,
                 sbox: SboxTypes::PasswordAndNonceBased,
                 thread_num: num_cpus::get(),
                 gf_poly: IrreduciblePoly::AES,
-                rounds: 3,
+                rounds: 6,
+                key_length: KeyLength::Key512,
             },
             Profile::Secure => Self {
                 device: DeviceList::Cpu,
                 sbox: SboxTypes::PasswordAndNonceBased,
                 thread_num: num_cpus::get(),
                 gf_poly: IrreduciblePoly::AES,
-                rounds: 3,
+                rounds: 8,
+                key_length: KeyLength::Key512,
+            },
+            Profile::Max => Self {
+                device: DeviceList::Cpu,
+                sbox: SboxTypes::PasswordAndNonceBased,
+                thread_num: num_cpus::get(),
+                gf_poly: IrreduciblePoly::AES,
+                rounds: 20,
+                key_length: KeyLength::Key512,
             },
         }
     }
@@ -533,8 +573,8 @@ impl Nonce {
     /// # Generates a Unique Nonce via Hash
     /// - Recommended for use in most cases
     /// - Adding extra security by hashing the nonce
-    pub fn hashed_nonce(osrng: Rng) -> NonceData {
-        let mut nonce = *osrng.as_bytes();
+    pub fn hashed_nonce(rng: Rng) -> NonceData {
+        let mut nonce = *rng.as_bytes();
         let number: u8 = rand::random_range(0..255);
 
         for i in 0..=number {
@@ -549,8 +589,8 @@ impl Nonce {
     /// # Generates a Unique Nonce via Tag and Hash
     /// - Adding extra security by hashing the nonce
     /// - Adding tag to the nonce (Extra Security)
-    pub fn tagged_nonce(osrng: Rng, tag: &[u8]) -> NonceData {
-        let mut nonce = *osrng.as_bytes();
+    pub fn tagged_nonce(rng: Rng, tag: &[u8]) -> NonceData {
+        let mut nonce = *rng.as_bytes();
         let number: u8 = rand::random_range(0..255);
 
         for i in 0..=number {
@@ -566,7 +606,7 @@ impl Nonce {
     /// This nonce must be saved along with the encrypted data.
     /// - Adding extra security by hashing the nonce
     /// - Adding machine info to the nonce (Extra Security)
-    pub fn machine_nonce(osrng: Option<Rng>) -> NonceData {
+    pub fn machine_nonce(rng: Option<Rng>) -> NonceData {
         let user_name = whoami::username();
         let device_name = whoami::devicename();
         let real_name = whoami::realname();
@@ -579,7 +619,7 @@ impl Nonce {
         all_data.extend_from_slice(real_name.as_bytes());
         all_data.extend_from_slice(distro.as_bytes());
 
-        if let Some(rng) = osrng {
+        if let Some(rng) = rng {
             all_data.extend_from_slice(rng.as_bytes());
         }
 
@@ -590,15 +630,15 @@ impl Nonce {
 
     /// Generates a unique Nonce
     /// - Classic method with random bytes
-    pub fn nonce(osrng: Rng) -> NonceData {
-        let nonce = *osrng.as_bytes();
+    pub fn nonce(rng: Rng) -> NonceData {
+        let nonce = *rng.as_bytes();
         let number: u8 = random_range(0..255);
 
         let new_nonce_vec = nonce
             .iter()
             .enumerate()
             .map(|(i, b)| {
-                let add = (osrng.as_bytes()[i % osrng.as_bytes().len()] as usize) % (i + 1);
+                let add = (rng.as_bytes()[i % rng.as_bytes().len()] as usize) % (i + 1);
                 let add = add as u8;
                 b.wrapping_add(add.wrapping_add(number))
             })
@@ -658,27 +698,6 @@ impl Salt {
     pub fn to_vec(&self) -> Vec<u8> {
         self.as_bytes().to_vec()
     }
-}
-
-/// Generates a new salt using a combination of random bytes from the thread and OS random number generators.
-pub fn generate_salt() -> Salt {
-    let rng = *Rng::thread_rng().as_bytes();
-    let mix_rng = *Rng::osrng().as_bytes();
-    let hash_rng = vec![rng, mix_rng].concat();
-    let mut out = Vec::new();
-
-    for (i, b) in hash_rng.iter().enumerate() {
-        let b = *b;
-        let add = (mix_rng[i % mix_rng.len()] as usize) % (i + 1);
-        let add = add as u8;
-        let new_b = b.wrapping_add(add.wrapping_add(rng[i % rng.len()] % 8));
-        out.push(new_b);
-    }
-
-    let mut salt = [0u8; 32];
-    salt.copy_from_slice(&out[..32]);
-
-    Salt::Salt(salt)
 }
 
 /// Returns vector or byte slice as a salt data.
@@ -774,6 +793,18 @@ impl GaloisField {
             None
         } else {
             Some(self.inv_table[a as usize])
+        }
+    }
+}
+
+fn choose_key(nonce: &[u8], key: &[u8], config: &Config) -> Vec<u8> {
+    match config.key_length {
+        KeyLength::Key256 => blake3::hash(&[nonce, key].concat()).as_bytes().to_vec(),
+        KeyLength::Key512 => {
+            let mut hash = Sha3_512::new();
+            hash.update(nonce);
+            hash.update(key);
+            hash.finalize().to_vec()
         }
     }
 }
@@ -886,8 +917,7 @@ fn mix_blocks(
     pwd: &[u8],
     config: Config,
 ) -> Result<Vec<u8>, Errors> {
-    let nonce = blake3::hash(&[nonce, pwd].concat());
-    let nonce = nonce.as_bytes();
+    let key = choose_key(nonce, pwd, &config);
 
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(config.thread_num)
@@ -902,7 +932,7 @@ fn mix_blocks(
         data.into_par_iter()
             .enumerate()
             .map(|(i, byte)| {
-                let n = nonce[i % nonce.len()];
+                let n = key[i % key.len()];
                 let mut byte = *byte;
                 byte = byte.wrapping_add(n);
                 byte = byte.rotate_right((n % 8) as u32); // Rotate the byte right by the nonce value
@@ -923,8 +953,7 @@ fn unmix_blocks(
     pwd: &[u8],
     config: Config,
 ) -> Result<Vec<u8>, Errors> {
-    let nonce = blake3::hash(&[nonce, pwd].concat());
-    let nonce = nonce.as_bytes();
+    let key = choose_key(nonce, pwd, &config);
 
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(config.thread_num)
@@ -939,7 +968,7 @@ fn unmix_blocks(
         data.into_par_iter()
             .enumerate()
             .map(|(i, byte)| {
-                let n = nonce[i % nonce.len()];
+                let n = key[i % key.len()];
                 let mut byte = *byte;
                 byte = byte.wrapping_sub(n);
                 byte ^= n; // XOR the byte with the nonce
@@ -958,6 +987,7 @@ fn derive_password_key(
     pwd: &[u8],
     salt: &[u8],
     custom_salt: Option<Salt>,
+    config: Config,
 ) -> Result<Vec<u8>, Errors> {
     if pwd.len().ct_eq(&32).unwrap_u8() != 1 {
         return Err(Errors::Argon2Failed("Invalid Password".to_string()));
@@ -971,13 +1001,22 @@ fn derive_password_key(
     }
 
     let argon = Argon2::default();
-
     let mut out = vec![0u8; 32]; // 256-bit key
     argon
         .hash_password_into(pwd, salt.as_str().as_bytes(), &mut out)
         .map_err(|e| Errors::Argon2Failed(e.to_string()))?; // Hashing Password VIA Argon2
 
-    Ok(out)
+    let password = match config.key_length {
+        KeyLength::Key256 => out,
+        KeyLength::Key512 => {
+            let mut pwd_hasher = Sha3_512::new();
+            pwd_hasher.update(&out);
+            pwd_hasher.update(salt.as_str().as_bytes());
+            pwd_hasher.finalize().to_vec()
+        }
+    };
+
+    Ok(password)
 }
 
 // TODO: Better key verification system via new dervition system; While Argon2 getting better salt Key will become more secure and easy to verify
@@ -1006,12 +1045,11 @@ fn generate_dynamic_sbox(nonce: &[u8], key: &[u8], cfg: Config) -> [u8; 256] {
         sbox[i] = i as u8;
     }
 
+    let seed_base = choose_key(nonce, key, &cfg);
     let seed = match cfg.sbox {
         SboxTypes::PasswordBased => blake3::hash(&[key].concat()).as_bytes().to_vec(),
         SboxTypes::NonceBased => blake3::hash(&[nonce].concat()).as_bytes().to_vec(),
-        SboxTypes::PasswordAndNonceBased => {
-            blake3::hash(&[nonce, key].concat()).as_bytes().to_vec()
-        }
+        SboxTypes::PasswordAndNonceBased => seed_base,
     };
 
     for i in (1..256).rev() {
@@ -1069,11 +1107,10 @@ fn dynamic_sizes(data_len: usize) -> u32 {
 }
 
 // TODO: Better chunk generation
-fn get_chunk_sizes(data_len: usize, nonce: &[u8], key: &[u8]) -> Vec<usize> {
+fn get_chunk_sizes(data_len: usize, nonce: &[u8], key: &[u8], config: Config) -> Vec<usize> {
     let mut sizes = Vec::new();
     let mut pos = 0;
-    let hash = blake3::hash(&[nonce, key].concat());
-    let seed = hash.as_bytes();
+    let seed = choose_key(nonce, key, &config);
 
     let data_size = dynamic_sizes(data_len) as usize;
 
@@ -1092,16 +1129,14 @@ fn dynamic_shift(
     password: &[u8],
     config: Config,
 ) -> Result<Vec<u8>, Errors> {
-    let key = blake3::hash(&[nonce, password].concat())
-        .as_bytes()
-        .to_vec();
+    let key = choose_key(nonce, password, &config);
 
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(config.thread_num)
         .build()
         .map_err(|e| Errors::ThreadPool(e.to_string()))?;
 
-    let chunk_sizes = get_chunk_sizes(data.len(), nonce, &key);
+    let chunk_sizes = get_chunk_sizes(data.len(), nonce, &key, config);
 
     let mut shifted = Vec::new();
     let mut cursor = 0;
@@ -1134,16 +1169,14 @@ fn dynamic_unshift(
     config: Config,
 ) -> Result<Vec<u8>, Errors> {
     let data = data.iter().rev().cloned().collect::<Vec<u8>>();
-    let key = blake3::hash(&[nonce, password].concat())
-        .as_bytes()
-        .to_vec();
+    let key = choose_key(nonce, password, &config);
 
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(config.thread_num)
         .build()
         .map_err(|e| Errors::ThreadPool(e.to_string()))?;
 
-    let chunk_sizes = get_chunk_sizes(data.len(), nonce, &key);
+    let chunk_sizes = get_chunk_sizes(data.len(), nonce, &key, config);
 
     let mut original = Vec::new();
     let mut cursor = 0;
@@ -1176,12 +1209,12 @@ fn auto_dynamic_chunk_shift(
 ) -> Result<Vec<u8>, Errors> {
     match config.device {
         DeviceList::Cpu => Ok(dynamic_shift(data, nonce, password, config)?),
-        DeviceList::Gpu => dynamic_shift_gpu(data, nonce, password),
+        DeviceList::Gpu => dynamic_shift_gpu(data, nonce, password, config),
         DeviceList::Auto => {
             if ocl::Platform::list().is_empty() {
                 Ok(dynamic_shift(data, nonce, password, config)?)
             } else {
-                dynamic_shift_gpu(data, nonce, password)
+                dynamic_shift_gpu(data, nonce, password, config)
             }
         }
     }
@@ -1195,12 +1228,12 @@ fn auto_dynamic_chunk_unshift(
 ) -> Result<Vec<u8>, Errors> {
     match config.device {
         DeviceList::Cpu => Ok(dynamic_unshift(data, nonce, password, config)?),
-        DeviceList::Gpu => dynamic_unshift_gpu(data, nonce, password),
+        DeviceList::Gpu => dynamic_unshift_gpu(data, nonce, password, config),
         DeviceList::Auto => {
             if ocl::Platform::list().is_empty() {
                 Ok(dynamic_unshift(data, nonce, password, config)?)
             } else {
-                dynamic_unshift_gpu(data, nonce, password)
+                dynamic_unshift_gpu(data, nonce, password, config)
             }
         }
     }
@@ -1216,9 +1249,13 @@ fn encrypt(
     custom_salt: Option<Salt>,
     wrap_all: bool,
 ) -> Result<Vec<u8>, Errors> {
+    if password.len().ct_ne(&0).unwrap_u8() != 1 {
+        return Err(Errors::EmptyPassword);
+    }
+
     let nonce = nonce.as_bytes();
     let mut password = derive_key(password, nonce);
-    let mut pwd = derive_password_key(&password, nonce, custom_salt)?;
+    let mut pwd = derive_password_key(&password, nonce, custom_salt, config)?;
 
     password.zeroize();
 
@@ -1255,13 +1292,20 @@ fn encrypt(
     mixed_columns_data.zeroize();
 
     let mut crypted = Vec::new();
-    let mut round_data = shifted_data.to_vec();
+    let mut round_data = xor_encrypt(nonce, &pwd, &shifted_data)?;
+
+    shifted_data.zeroize();
 
     for i in 0..=config.rounds {
         let slice_end = std::cmp::min(i * 8, pwd.len());
-        let key = blake3::hash(&pwd[..slice_end]);
-
-        let key = *key.as_bytes();
+        let key = match config.key_length {
+            KeyLength::Key256 => blake3::hash(&pwd[..slice_end]).as_bytes().to_vec(),
+            KeyLength::Key512 => {
+                let mut hash = Sha3_512::new();
+                hash.update(&pwd[..slice_end]);
+                hash.finalize().to_vec()
+            }
+        };
 
         let crypted_chunks = round_data
             .par_chunks(dynamic_sizes(round_data.len()) as usize)
@@ -1279,8 +1323,6 @@ fn encrypt(
             round_data = crypted_chunks;
         }
     }
-
-    shifted_data.zeroize();
 
     let mut mac_sha = Sha3_512::new();
     mac_sha.update(&crypted);
@@ -1329,9 +1371,13 @@ fn decrypt(
     let nonce_byte = nonce_data.as_bytes();
 
     let password_hash: [u8; 32] = derive_key(password, nonce_byte);
-    let mut expected_password =
-        derive_password_key(&derive_key(password, nonce_byte), nonce_byte, custom_salt)?;
-    let mut pwd = derive_password_key(&password_hash, nonce_byte, custom_salt)?;
+    let mut expected_password = derive_password_key(
+        &derive_key(password, nonce_byte),
+        nonce_byte,
+        custom_salt,
+        config,
+    )?;
+    let mut pwd = derive_password_key(&password_hash, nonce_byte, custom_salt, config)?;
 
     if !verify_keys_constant_time(&pwd, &expected_password)? {
         pwd.zeroize();
@@ -1378,7 +1424,9 @@ fn decrypt(
         let (crypted, mac_key) = rest.split_at(rest.len() - 32);
 
         (crypted, mac_key)
-    } else if version.starts_with(b"atom-version:0x3") && wrapped {
+    } else if version.starts_with(b"atom-version:0x3") && wrapped
+        || version.starts_with(b"atom-version:0x4") && wrapped
+    {
         let (crypted, rest) = rest.split_at(rest.len() - 96);
         let (mac_key, _) = rest.split_at(64);
 
@@ -1394,9 +1442,14 @@ fn decrypt(
 
     for i in (0..=config.rounds).rev() {
         let slice_end = std::cmp::min(i * 8, pwd.len());
-        let key = blake3::hash(&pwd[..slice_end]);
-
-        let key = *key.as_bytes();
+        let key = match config.key_length {
+            KeyLength::Key256 => blake3::hash(&pwd[..slice_end]).as_bytes().to_vec(),
+            KeyLength::Key512 => {
+                let mut hash = Sha3_512::new();
+                hash.update(&pwd[..slice_end]);
+                hash.finalize().to_vec()
+            }
+        };
 
         let decrypted = round_data
             .to_vec()
@@ -1415,6 +1468,13 @@ fn decrypt(
             round_data = decrypted
         }
     }
+
+    let mut xor_decrypted = if version.starts_with(b"atom-version:0x4") {
+        xor_decrypt(nonce_byte, &pwd, &xor_decrypted)
+            .map_err(|e| Errors::InvalidXor(e.to_string()))?
+    } else {
+        xor_decrypted
+    };
 
     let mut unshifted = auto_dynamic_chunk_unshift(
         &in_s_bytes(&xor_decrypted, nonce_byte, &pwd, config)?,
@@ -1469,6 +1529,21 @@ fn decrypt(
 }
 
 // -----------------------------------------------------
+
+pub trait AsBase {
+    fn as_base64(&self) -> String;
+    fn as_string(&self) -> String;
+}
+
+impl AsBase for Vec<u8> {
+    fn as_base64(&self) -> String {
+        BASE64_STANDARD.encode(self)
+    }
+
+    fn as_string(&self) -> String {
+        String::from_utf8_lossy(self).to_string()
+    }
+}
 
 impl AtomCrypteBuilder {
     /// Creates a new instance of AtomCrypteBuilder.
@@ -1555,10 +1630,10 @@ impl AtomCrypteBuilder {
 
         if benchmark {
             let start = Instant::now();
-            let out = encrypt(password.as_str(), &data, nonce, config, salt, wrap_all);
+            let out = encrypt(password.as_str(), &data, nonce, config, salt, wrap_all)?;
             let duration = start.elapsed();
             println!("Encryption took {}ms", duration.as_millis());
-            out
+            Ok(out)
         } else {
             encrypt(password.as_str(), &data, nonce, config, salt, wrap_all)
         }

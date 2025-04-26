@@ -1,59 +1,74 @@
 # AtomCrypte
 
-📢 Latest Major Release: [v0.3.0 - Secure Evolution](CHANGELOGS.md)
+📢 Latest Major Release: [v0.4.0 - Steps Toward](CHANGELOGS.md)
 
 - A high-performance, multi-layered encryption library designed for flexibility, security, and speed.
-- You can find the Threat Model here: [Threat Model](atomcrypte_threat_model.md)
+- You can find the Threat Model here: [Threat Model](TEST-SUITE.md)
 - You can find changelogs here: [Changelogs](CHANGELOGS.md)
+- You can find Pre-Release steps testing here: [Pre-Release Testing](PRERELEASE-TESTING.md)
+- Known Issues: [Known Issues](KNOWN-ISSUES.md)
 
 ---
 
 ## 🚧 Disclaimer
-This project is experimental and should not be used in production systems. It is created for academic research, cryptographic experimentation, and learning purposes. Use at your own discretion.
+- This project is currently experimental and is not recommended for production environments.
+- While it offers strong multi-layered security, including quantum-resilient techniques, it has not undergone formal third-party audits.
+- It has been developed for academic research, cryptographic experimentation, and educational purposes.
+- **Use at your own discretion, and apply additional caution in critical systems.**
 
 ---
 
 ## Overview
 
-AtomCrypte is a robust encryption library that combines multiple cryptographic techniques to provide state-of-the-art security with configurable parameters. It supports parallel processing, GPU acceleration, and modular cryptographic components, enabling both performance and advanced customization.
+AtomCrypte is a robust encryption library that combines multiple cryptographic techniques to provide state-of-the-art security with configurable parameters.
+It supports parallel processing, GPU acceleration, and modular cryptographic components, enabling both performance and advanced customization.
+
+---
 
 ## Key Features
+
+- **512-bit Key Support**: Supports keys of up to 512 bits for enhanced security.
 - **Constant-Time Execution (Locally Verified)**: All critical operations are implemented to run in constant time, minimizing timing side-channel risks. While extensive local testing confirms stability across various inputs, third-party validation is recommended for formal assurance.
-- **Salt Support**: Cryptographic salt generation using `Salt::new()` to prevent rainbow table attacks
-- **Infinite Rounds**: User-defined encryption round count
-- **Wrap-All Support**: Seamlessly wraps salt, nonce, version, etc. into final output
-- **MAC with SHA3-512**: Strong integrity validation and quantum resistance
-- **Benchmark Support**: Time encryption/decryption operations with `.benchmark()`
-- **Secure Key Derivation**: Argon2 + Blake3 for password hashing
-- **Dynamic S-boxes**: Based on password, nonce or both
-- **Finite Field Arithmetic**: Galois Field operations similar to AES MixColumns
-- **Parallel Processing**: Uses Rayon for multicore CPU support
-- **GPU Acceleration**: GPU Acceleration: OpenCL backend for fast encryption/decryption. ⚠️ Note: Due to current OpenCL driver or platform behavior, minor memory leaks (typically ≤ 100 bytes) may occur during GPU execution. These do not affect cryptographic correctness and are not classified as critical, but future updates aim to address this.
-- **Zeroized Memory**: Automatic clearing of sensitive data in RAM
+- **Salt Support**: Cryptographic salt generation using `Salt::new()` to prevent rainbow table attacks.
+- **Infinite Rounds**: User-defined encryption round count.
+- **Wrap-All Support**: Seamlessly wraps salt, nonce, version, etc. into final output.
+- **MAC with SHA3-512**: Strong integrity validation and quantum resistance.
+- **Benchmark Support**: Time encryption/decryption operations with `.benchmark()`.
+- **Secure Key Derivation**: Argon2 + Blake3 for password hashing.
+- **Dynamic S-boxes**: Based on password, nonce, or both.
+- **Finite Field Arithmetic**: Galois Field operations similar to AES MixColumns.
+- **Parallel Processing**: Uses Rayon for multicore CPU support.
+- **GPU Acceleration**: OpenCL backend for fast encryption/decryption.
+  ⚠️ Note: Due to current OpenCL driver or platform behavior, minor memory leaks (typically ≤ 100 bytes) may occur during GPU execution. These do not affect cryptographic correctness and are not classified as critical, but future updates aim to address this.
+- **Zeroized Memory**: Automatic clearing of sensitive data in RAM.
 - **Perfect Distribution**:
-  - Perfect Distribution (Verified across 10,000 runs)
-  Exhaustive statistical tests confirm near-theoretical perfection in data diffusion and unpredictability:
+  - Exhaustive statistical tests confirms near-theoretical perfection:
     - Shannon Entropy: `8.0000` (Perfect randomness, Max)
     - Bit Balance: `1.0000` (Perfect bit distribution, Max)
     - Avalanche Effect: `0.5000` (Ideal avalanche ratio)
-  - These results demonstrate resistance against entropy-based and statistical attacks, even under extreme repetition.
+  - Verified over 10,000 independent test runs.
 - **Memory Hard**: Algorithm is designed to be memory-hard, making it resistant to brute-force attacks even with large amounts of memory.
-- **Zero Memory Leak (Verified in Local Testing)**: Extensive `Valgrind` testing under multiple stress scenarios (including 25x repeat encryption) shows zero **definite** or **indirect** memory leaks. (Note: Not yet validated by third-party audits or formal verification tools.)
+- **Zero Memory Leak (Verified in Local Testing)**:
+  Extensive `Valgrind` testing under multiple stress scenarios (including 25x repeat encryption) shows zero **definite** or **indirect** memory leaks.
+  (Note: Not yet validated by third-party audits or formal verification tools.)
+
+---
 
 ## Cryptographic Components
-
-AtomCrypte integrates the following primitives and concepts:
 
 - **Argon2**: Memory-hard password hashing
 - **Blake3**: Fast cryptographic hash for key derivation
 - **SHA3-512**: Default MAC function with post-quantum resilience
 - **Custom S-box**: Deterministic but unique per configuration
 - **Galois Field**: MixColumns-like transformation layer
+- **Dynamic Chunk Shifting**: Adaptive chunk size adjustment based on nonce, password, data length
+- **Block Mix**: Efficiently Mixing data
+- **XOR Layer**: Basic XOR layer for data mixing with Rotation
 - **MAC Validation**: Ensures authenticity and tamper-resistance
 
-## Configuration Options
+---
 
-AtomCrypte is highly configurable. Below are common customization options:
+## Configuration Options
 
 ### Device Selection
 ```rust
@@ -87,6 +102,7 @@ pub enum Profile {
     Secure,
     Balanced,
     Fast,
+    Max,
 }
 ```
 
@@ -148,7 +164,7 @@ let encrypted = AtomCrypteBuilder::new()
 ```
 
 ### Custom Configuration
-- 🚧 If you forget your configuration, you won't be able to decrypt the data. (Especially important if you changed round count, S-box type, or polynomial.)
+- 🚧 If you forget your configuration, you won't be able to decrypt the data. (Especially important if you changed round count, S-box type, Key Length, or polynomial.)
 ```rust
 use atom_crypte::{AtomCrypteBuilder, Config, DeviceList, SboxTypes, IrreduciblePoly};
 
@@ -157,14 +173,14 @@ let config = Config::default()
     .with_sbox(SboxTypes::PasswordAndNonceBased)
     .set_thread(4)
     .gf_poly(IrreduciblePoly::Custom(0x4d))
-    .rounds(6); // 4 Rounds recommended
+    .rounds(6); // 6 ~ 8 Rounds recommended
 ```
 
 ### Using Predefined Profiles
 ```rust
 use atom_crypte::{AtomCrypteBuilder, Config, Profile};
 
-let config = Config::from_profile(Profile::Fast);
+let config = Config::from_profile(Profile::Secure);
 ```
 
 ### Machine-specific Encryption
@@ -195,6 +211,7 @@ let password = "your_password_here".machine_rng(false); // False means no distro
 
 ## 💡 Roadmap
 
+- Test Suite
 - Kyber (PQC) integration
 - Recovery key fallback
 - Machine-level access controls
@@ -207,3 +224,4 @@ let password = "your_password_here".machine_rng(false); // False means no distro
 
 - Developer: Metehan
 - E-Mail: metehanzafer@proton.me
+- Special thanks to the Rust community, cryptography researchers, and open-source contributors inspiring robust, future-ready designs.

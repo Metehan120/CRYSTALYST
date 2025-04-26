@@ -1,9 +1,14 @@
-use crate::{Errors, get_chunk_sizes};
+use crate::{Config, Errors, get_chunk_sizes};
 use blake3;
 use ocl::{Buffer, ProQue};
 
 /// Dynamic shift using GPU
-pub fn dynamic_shift_gpu(data: &[u8], nonce: &[u8], password: &[u8]) -> Result<Vec<u8>, Errors> {
+pub fn dynamic_shift_gpu(
+    data: &[u8],
+    nonce: &[u8],
+    password: &[u8],
+    config: Config,
+) -> Result<Vec<u8>, Errors> {
     let src = include_str!("atom_gpu.cl");
 
     if ocl::Platform::list().is_empty() {
@@ -17,7 +22,7 @@ pub fn dynamic_shift_gpu(data: &[u8], nonce: &[u8], password: &[u8]) -> Result<V
     let key = key_hash.as_bytes();
 
     // Compute chunk sizes (using your get_chunk_sizes function)
-    let chunk_sizes = get_chunk_sizes(data.len(), nonce, &key.clone());
+    let chunk_sizes = get_chunk_sizes(data.len(), nonce, &key.clone(), config);
     // Convert chunk sizes to u32 for OpenCL and calculate offsets
     let chunk_sizes_u32: Vec<u32> = chunk_sizes.iter().copied().map(|s| s as u32).collect();
     let mut chunk_offsets = Vec::with_capacity(chunk_sizes_u32.len());
@@ -99,7 +104,12 @@ pub fn dynamic_shift_gpu(data: &[u8], nonce: &[u8], password: &[u8]) -> Result<V
 }
 
 /// Dynamic unshift using GPU
-pub fn dynamic_unshift_gpu(data: &[u8], nonce: &[u8], password: &[u8]) -> Result<Vec<u8>, Errors> {
+pub fn dynamic_unshift_gpu(
+    data: &[u8],
+    nonce: &[u8],
+    password: &[u8],
+    config: crate::Config,
+) -> Result<Vec<u8>, Errors> {
     let src = include_str!("atom_gpu.cl");
     let data = data.iter().rev().cloned().collect::<Vec<u8>>();
 
@@ -112,7 +122,7 @@ pub fn dynamic_unshift_gpu(data: &[u8], nonce: &[u8], password: &[u8]) -> Result
     let key_hash = blake3::hash(&[nonce, password].concat());
     let key = key_hash.as_bytes();
 
-    let chunk_sizes = get_chunk_sizes(data.len(), nonce, &key.clone());
+    let chunk_sizes = get_chunk_sizes(data.len(), nonce, &key.clone(), config);
     let chunk_sizes_u32: Vec<u32> = chunk_sizes.iter().copied().map(|s| s as u32).collect();
     let mut chunk_offsets = Vec::with_capacity(chunk_sizes_u32.len());
     let mut sum = 0;
