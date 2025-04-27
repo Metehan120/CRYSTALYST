@@ -2,12 +2,12 @@
 
 📢 Latest Major Release: [v0.4.0 - Steps Toward](CHANGELOGS.md)
 
+- OFFICIAL SITE & DOCUMENTATION: [SITE](https://atomcrypte.zaferoglu.me/main)
 - A high-performance, multi-layered encryption library designed for flexibility, security, and speed.
-- You can find the Threat Model here: [Threat Model](TEST-SUITE.md)
+- You can find the Threat Model here: [Threat Model](THREAT-MODEL.md)
 - You can find changelogs here: [Changelogs](CHANGELOGS.md)
 - You can find Pre-Release steps testing here: [Pre-Release Testing](PRERELEASE-TESTING.md)
 - Known Issues: [Known Issues](KNOWN-ISSUES.md)
-
 ---
 
 ## 🚧 Disclaimer
