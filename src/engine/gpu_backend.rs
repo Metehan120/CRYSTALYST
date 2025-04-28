@@ -1,4 +1,4 @@
-use crate::{Config, Errors, get_chunk_sizes};
+use crate::{Config, Errors, engine::engine::get_chunk_sizes};
 use blake3;
 use ocl::{Buffer, ProQue};
 
