@@ -38,7 +38,7 @@ It supports parallel processing, GPU acceleration, and modular cryptographic com
 - **Dynamic S-boxes**: Based on password, nonce, or both.
 - **Finite Field Arithmetic**: Galois Field operations similar to AES MixColumns.
 - **Dummy Data**:
-  - **Input Shield:** If input is empty or predictable, generates 1 B–8 KB of random “junk.”
+  - **Input Shield:** If input is empty, generates 1 B–8 KB of random “junk.”
   - **Output Decoys:** Appends up to 1 MB of extra random bytes post-encryption to confuse size-based analysis.
 - **Parallel Processing**: Uses Rayon for multicore CPU support.
 - **GPU Acceleration**: OpenCL backend for fast encryption/decryption.
