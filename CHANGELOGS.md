@@ -1,3 +1,22 @@
+# AtomCrypte v0.4.1 – “Dummy Data”
+
+## New Features
+
+### 1. Dummy Data Generator
+- **Timing‐Attack Shield:**
+  - If someone feeds you an empty input, AtomCrypte now auto‐generates a random “junk” payload (1 BYTE – 8 KB by default).
+  - General‐purpose decoy bytes: after any encryption call, AtomCrypte can sprinkle in up to **1 MB** of extra random data.
+- **Analysis‐Attack Confusion:**
+  - Any attempt to profile your ciphertext size or pattern gets thrown off by these decoy bytes.
+
+### 2. Secure Zeroize
+- **Two‐Pass Memory Wipe:**
+  1. **Overwrite** all sensitive buffers with random bytes.
+  2. **Zero‐out** every single byte.
+- **Balanced Performance:**
+  - No significant performance degradation observed — your data stays safe without slowing you down.
+
+
 # AtomCrypte v0.4.0 - "Steps Toward"
 ## New Features
 

@@ -90,6 +90,18 @@ pub fn triangle_mix_columns(
     gf: &GaloisField,
     config: Config,
 ) -> Result<Vec<u8>, Errors> {
+    let mut data: Vec<u8> = if data.is_empty() {
+        (0..7624).map(|_| rand::random::<u8>()).collect()
+    } else {
+        data.to_vec()
+    };
+
+    let mut dummy_data: Vec<u8> = Vec::new();
+
+    for _i in 0..rand::random_range(0..1048576) {
+        dummy_data.push(rand::random::<u8>());
+    }
+
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(config.thread_num)
         .build()
@@ -115,6 +127,18 @@ pub fn inverse_triangle_mix_columns(
     gf: &GaloisField,
     config: Config,
 ) -> Result<Vec<u8>, Errors> {
+    let mut data: Vec<u8> = if data.is_empty() {
+        (0..7624).map(|_| rand::random::<u8>()).collect()
+    } else {
+        data.to_vec()
+    };
+
+    let mut dummy_data: Vec<u8> = Vec::new();
+
+    for _i in 0..rand::random_range(0..1048576) {
+        dummy_data.push(rand::random::<u8>());
+    }
+
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(config.thread_num)
         .build()
@@ -145,6 +169,18 @@ pub fn inverse_triangle_mix_columns(
 }
 
 pub fn xor_encrypt(nonce: &[u8], pwd: &[u8], input: &[u8]) -> Result<Vec<u8>, Errors> {
+    let input: Vec<u8> = if input.is_empty() {
+        (0..7624).map(|_| rand::random::<u8>()).collect()
+    } else {
+        input.to_vec()
+    };
+
+    let mut dummy_data: Vec<u8> = Vec::new();
+
+    for _i in 0..rand::random_range(0..1048576) {
+        dummy_data.push(rand::random::<u8>());
+    }
+
     let out = input
         .into_par_iter()
         .enumerate()
@@ -167,6 +203,18 @@ pub fn xor_encrypt(nonce: &[u8], pwd: &[u8], input: &[u8]) -> Result<Vec<u8>, Er
 }
 
 pub fn xor_decrypt(nonce: &[u8], pwd: &[u8], input: &[u8]) -> Result<Vec<u8>, Errors> {
+    let input: Vec<u8> = if input.is_empty() {
+        (0..7624).map(|_| rand::random::<u8>()).collect()
+    } else {
+        input.to_vec()
+    };
+
+    let mut dummy_data: Vec<u8> = Vec::new();
+
+    for _i in 0..rand::random_range(0..1048576) {
+        dummy_data.push(rand::random::<u8>());
+    }
+
     let out = input
         .into_par_iter()
         .enumerate()
@@ -195,6 +243,18 @@ pub fn mix_blocks(
 ) -> Result<Vec<u8>, Errors> {
     let key = choose_key(nonce, pwd, &config);
 
+    let data: Vec<u8> = if data.is_empty() {
+        (0..7624).map(|_| rand::random::<u8>()).collect()
+    } else {
+        data.to_vec()
+    };
+
+    let mut dummy_data: Vec<u8> = Vec::new();
+
+    for _i in 0..rand::random_range(0..1048576) {
+        dummy_data.push(rand::random::<u8>());
+    }
+
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(config.thread_num)
         .build()
@@ -209,7 +269,7 @@ pub fn mix_blocks(
             .enumerate()
             .map(|(i, byte)| {
                 let n = key[i % key.len()];
-                let mut byte = *byte;
+                let mut byte = byte;
                 byte = byte.wrapping_add(n);
                 byte = byte.rotate_right((n % 8) as u32); // Rotate the byte right by the nonce value
                 byte ^= n; // XOR the byte with the nonce
@@ -231,6 +291,18 @@ pub fn unmix_blocks(
 ) -> Result<Vec<u8>, Errors> {
     let key = choose_key(nonce, pwd, &config);
 
+    let data: Vec<u8> = if data.is_empty() {
+        (0..7624).map(|_| rand::random::<u8>()).collect()
+    } else {
+        data.to_vec()
+    };
+
+    let mut dummy_data: Vec<u8> = Vec::new();
+
+    for _i in 0..rand::random_range(0..1048576) {
+        dummy_data.push(rand::random::<u8>());
+    }
+
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(config.thread_num)
         .build()
@@ -245,7 +317,7 @@ pub fn unmix_blocks(
             .enumerate()
             .map(|(i, byte)| {
                 let n = key[i % key.len()];
-                let mut byte = *byte;
+                let mut byte = byte;
                 byte = byte.wrapping_sub(n);
                 byte ^= n; // XOR the byte with the nonce
                 byte = byte.rotate_left((n % 8) as u32); // Rotate the byte left by the nonce value
@@ -368,6 +440,12 @@ pub fn dynamic_shift(
 
     let chunk_sizes = get_chunk_sizes(data.len(), nonce, &key, config);
 
+    let mut dummy_data: Vec<u8> = Vec::new();
+
+    for _i in 0..rand::random_range(0..1048576) {
+        dummy_data.push(rand::random::<u8>());
+    }
+
     let mut shifted = Vec::new();
     let mut cursor = 0;
 
@@ -407,6 +485,12 @@ pub fn dynamic_unshift(
         .map_err(|e| Errors::ThreadPool(e.to_string()))?;
 
     let chunk_sizes = get_chunk_sizes(data.len(), nonce, &key, config);
+
+    let mut dummy_data: Vec<u8> = Vec::new();
+
+    for _i in 0..rand::random_range(0..1048576) {
+        dummy_data.push(rand::random::<u8>());
+    }
 
     let mut original = Vec::new();
     let mut cursor = 0;

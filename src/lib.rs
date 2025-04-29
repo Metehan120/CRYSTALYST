@@ -383,7 +383,7 @@ impl Config {
         if num < 1 {
             eprintln!("Round count too low. Automatically set to 1.");
             self.rounds = 1;
-            return self;
+            self
         } else {
             self.rounds = num;
             self
@@ -839,6 +839,17 @@ fn auto_dynamic_chunk_unshift(
 
 // -----------------------------------------------------
 
+fn secure_zeroize(data: &mut [u8]) {
+    use rand::Rng;
+    let mut rng = rand::rng();
+
+    for byte in data.iter_mut() {
+        *byte = rng.random::<u8>();
+    }
+
+    data.zeroize();
+}
+
 fn encrypt(
     password: &str,
     data: &[u8],
@@ -855,7 +866,7 @@ fn encrypt(
     let mut password = derive_key(password, nonce);
     let mut pwd = derive_password_key(&password, nonce, custom_salt, config)?;
 
-    password.zeroize();
+    secure_zeroize(&mut password);
 
     let mut out_vec = Vec::new();
 
@@ -878,7 +889,8 @@ fn encrypt(
         config,
     )?;
 
-    mixed_data.zeroize();
+    secure_zeroize(&mut mixed_data);
+    drop(mixed_data);
 
     let mut shifted_data = s_bytes(
         &auto_dynamic_chunk_shift(&mixed_columns_data, nonce, &pwd, config)?,
@@ -886,13 +898,15 @@ fn encrypt(
         config,
     )?;
 
-    s_block.zeroize();
-    mixed_columns_data.zeroize();
+    secure_zeroize(&mut s_block);
+    secure_zeroize(&mut mixed_columns_data);
+    drop(mixed_columns_data);
 
     let mut crypted = Vec::new();
     let mut round_data = xor_encrypt(nonce, &pwd, &shifted_data)?;
 
-    shifted_data.zeroize();
+    secure_zeroize(&mut shifted_data);
+    drop(shifted_data);
 
     for i in 0..=config.rounds {
         let slice_end = std::cmp::min(i * 8, pwd.len());
@@ -918,7 +932,7 @@ fn encrypt(
         if i == config.rounds {
             crypted.extend(crypted_chunks);
         } else {
-            round_data.zeroize();
+            secure_zeroize(&mut round_data);
             round_data = crypted_chunks;
         }
     }
@@ -928,7 +942,8 @@ fn encrypt(
     mac_sha.update(blake3::hash(&xor_encrypt(nonce, &pwd, &data)?).as_bytes());
     let mac = mac_sha.finalize();
 
-    pwd.zeroize();
+    secure_zeroize(&mut pwd);
+    drop(pwd);
 
     out_vec.extend(crypted);
     out_vec.extend(mac);
@@ -979,12 +994,15 @@ fn decrypt(
     let mut pwd = derive_password_key(&password_hash, nonce_byte, custom_salt, config)?;
 
     if !verify_keys_constant_time(&pwd, &expected_password)? {
-        pwd.zeroize();
-        expected_password.zeroize();
+        secure_zeroize(&mut pwd);
+        drop(pwd);
+        secure_zeroize(&mut expected_password);
+        drop(expected_password);
         return Err(Errors::InvalidMac("Invalid key".to_string()));
     }
 
-    expected_password.zeroize();
+    secure_zeroize(&mut expected_password);
+    drop(expected_password);
 
     if data.len() < 32 + VERSION.len() {
         return Err(Errors::InvalidMac("Data is too short".to_string()));
@@ -1014,7 +1032,8 @@ fn decrypt(
     if !version.starts_with(b"atom-version") || !version_2.starts_with(b"atom-version") {
         if version.starts_with(b"atom-version") || version_2.starts_with(b"atom-version") {
         } else {
-            pwd.zeroize();
+            secure_zeroize(&mut pwd);
+            drop(pwd);
             return Err(Errors::InvalidAlgorithm);
         }
     }
@@ -1064,7 +1083,7 @@ fn decrypt(
         if i == 0 {
             xor_decrypted.extend(decrypted);
         } else {
-            round_data.zeroize();
+            secure_zeroize(&mut round_data);
             round_data = decrypted
         }
     }
@@ -1083,7 +1102,8 @@ fn decrypt(
         config,
     )?;
 
-    xor_decrypted.zeroize();
+    secure_zeroize(&mut xor_decrypted);
+    drop(xor_decrypted);
 
     let mut inversed_columns = inverse_triangle_mix_columns(
         &mut unshifted,
@@ -1092,12 +1112,15 @@ fn decrypt(
     )?;
     let mut unmixed = unmix_blocks(&mut inversed_columns, nonce_byte, &pwd, config)?;
 
-    unshifted.zeroize();
-    inversed_columns.zeroize();
+    secure_zeroize(&mut unshifted);
+    secure_zeroize(&mut inversed_columns);
+    drop(unshifted);
+    drop(inversed_columns);
 
     let mut decrypted_data = in_s_bytes(&unmixed, nonce_byte, &pwd, config)?;
 
-    unmixed.zeroize();
+    secure_zeroize(&mut unmixed);
+    drop(unmixed);
 
     if version.starts_with(b"atom-version:0x2") {
         let mac = blake3::keyed_hash(
@@ -1105,11 +1128,13 @@ fn decrypt(
             &xor_encrypt(nonce_byte, &pwd, &decrypted_data)?,
         ); // Generate a MAC for the data
 
-        pwd.zeroize();
+        secure_zeroize(&mut pwd);
+        drop(pwd);
 
         if mac.as_bytes().ct_eq(mac_key).unwrap_u8() != 1 {
             // Check if the MAC is valid
-            decrypted_data.zeroize();
+            secure_zeroize(&mut decrypted_data);
+            drop(decrypted_data);
             return Err(Errors::InvalidMac("Invalid authentication".to_string()));
         }
     } else {
@@ -1118,9 +1143,13 @@ fn decrypt(
         mac_sha.update(blake3::hash(&xor_encrypt(nonce_byte, &pwd, &decrypted_data)?).as_bytes());
         let mac = mac_sha.finalize();
 
+        secure_zeroize(&mut pwd);
+        drop(pwd);
+
         if mac.as_slice().ct_eq(mac_key).unwrap_u8() != 1 {
             // Check if the MAC is valid
-            decrypted_data.zeroize();
+            secure_zeroize(&mut decrypted_data);
+            drop(decrypted_data);
             return Err(Errors::InvalidMac("Invalid authentication".to_string()));
         }
     }
