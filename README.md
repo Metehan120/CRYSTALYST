@@ -37,6 +37,9 @@ It supports parallel processing, GPU acceleration, and modular cryptographic com
 - **Secure Key Derivation**: Argon2 + Blake3 for password hashing.
 - **Dynamic S-boxes**: Based on password, nonce, or both.
 - **Finite Field Arithmetic**: Galois Field operations similar to AES MixColumns.
+- **Dummy Data**:
+  - **Input Shield:** If input is empty or predictable, generates 1 B–8 KB of random “junk.”
+  - **Output Decoys:** Appends up to 1 MB of extra random bytes post-encryption to confuse size-based analysis.
 - **Parallel Processing**: Uses Rayon for multicore CPU support.
 - **GPU Acceleration**: OpenCL backend for fast encryption/decryption.
   ⚠️ Note: Due to current OpenCL driver or platform behavior, minor memory leaks (typically ≤ 100 bytes) may occur during GPU execution. These do not affect cryptographic correctness and are not classified as critical, but future updates aim to address this.
