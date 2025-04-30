@@ -207,6 +207,8 @@ use base64::{Engine, prelude::BASE64_STANDARD};
 use blake3::derive_key;
 use engine::engine::*;
 use engine::gpu_backend::*;
+use hmac::Hmac;
+use hmac::Mac;
 use rand::{RngCore, TryRngCore, random_range, rngs::OsRng};
 use rayon::prelude::*;
 use sha3::{Digest, Sha3_512};
@@ -215,7 +217,7 @@ use thiserror::Error;
 use zeroize::Zeroize;
 mod engine;
 
-static VERSION: &[u8] = b"atom-version:0x4";
+static VERSION: &[u8] = b"atom-version:0x5";
 
 /// Represents different types of nonces used in the encryption process.
 /// - TaggedNonce: Nonce combined with a user-provided tag
@@ -255,6 +257,8 @@ pub enum Errors {
     EmptyPassword,
     #[error("Invalid Password Length, at least need to be 16 bytes")]
     InvalidPasswordLength,
+    #[error("Invalid Key: {0}")]
+    InvalidKey(String),
 }
 
 /// Represents different types of devices that can be used for encryption and decryption.
@@ -309,6 +313,7 @@ pub struct Config {
     pub thread_num: usize,
     pub gf_poly: IrreduciblePoly,
     pub key_length: KeyLength,
+    pub dummy_data: bool,
 } // For feature use
 
 /// Profile for the encryption and decryption process.
@@ -334,8 +339,9 @@ impl Default for Config {
             sbox: SboxTypes::PasswordAndNonceBased,
             thread_num: num_cpus::get(),
             gf_poly: IrreduciblePoly::AES,
-            rounds: 6,
+            rounds: 2,
             key_length: KeyLength::Key512,
+            dummy_data: true,
         }
     }
 }
@@ -390,6 +396,13 @@ impl Config {
         }
     }
 
+    /// Sets the dummy data.
+    /// Recommended dummy data for security.
+    pub fn dummy_data(mut self, dummy_data: bool) -> Self {
+        self.dummy_data = dummy_data;
+        self
+    }
+
     /// Create a configuration from a profile
     /// For compatibility on fast profile with older versions set round to 2.
     /// For compatibility on balanced profile with older versions set round to 3 and key length to Key256.
@@ -401,32 +414,36 @@ impl Config {
                 sbox: SboxTypes::PasswordBased,
                 thread_num: num_cpus::get(),
                 gf_poly: IrreduciblePoly::AES,
-                rounds: 3,
+                rounds: 1,
                 key_length: KeyLength::Key256,
+                dummy_data: false,
             },
             Profile::Balanced => Self {
                 device: DeviceList::Auto,
                 sbox: SboxTypes::PasswordAndNonceBased,
                 thread_num: num_cpus::get(),
                 gf_poly: IrreduciblePoly::AES,
-                rounds: 6,
+                rounds: 2,
                 key_length: KeyLength::Key512,
+                dummy_data: false,
             },
             Profile::Secure => Self {
                 device: DeviceList::Cpu,
                 sbox: SboxTypes::PasswordAndNonceBased,
                 thread_num: num_cpus::get(),
                 gf_poly: IrreduciblePoly::AES,
-                rounds: 8,
+                rounds: 4,
                 key_length: KeyLength::Key512,
+                ..Default::default()
             },
             Profile::Max => Self {
                 device: DeviceList::Cpu,
                 sbox: SboxTypes::PasswordAndNonceBased,
                 thread_num: num_cpus::get(),
                 gf_poly: IrreduciblePoly::AES,
-                rounds: 20,
+                rounds: 10,
                 key_length: KeyLength::Key512,
+                ..Default::default()
             },
         }
     }
@@ -800,17 +817,17 @@ fn verify_keys_constant_time(key1: &[u8], key2: &[u8]) -> Result<bool, Errors> {
 }
 
 fn auto_dynamic_chunk_shift(
-    data: &[u8],
+    data: &Vec<u8>,
     nonce: &[u8],
     password: &[u8],
     config: Config,
 ) -> Result<Vec<u8>, Errors> {
     match config.device {
-        DeviceList::Cpu => Ok(dynamic_shift(data, nonce, password, config)?),
+        DeviceList::Cpu => Ok(dynamic_shift(&data, nonce, password, config)?),
         DeviceList::Gpu => dynamic_shift_gpu(data, nonce, password, config),
         DeviceList::Auto => {
             if ocl::Platform::list().is_empty() {
-                Ok(dynamic_shift(data, nonce, password, config)?)
+                Ok(dynamic_shift(&data, nonce, password, config)?)
             } else {
                 dynamic_shift_gpu(data, nonce, password, config)
             }
@@ -819,7 +836,7 @@ fn auto_dynamic_chunk_shift(
 }
 
 fn auto_dynamic_chunk_unshift(
-    data: &[u8],
+    data: &Vec<u8>,
     nonce: &[u8],
     password: &[u8],
     config: Config,
@@ -840,14 +857,23 @@ fn auto_dynamic_chunk_unshift(
 // -----------------------------------------------------
 
 fn secure_zeroize(data: &mut [u8]) {
-    use rand::Rng;
-    let mut rng = rand::rng();
+    if data.len() < 1024 * 1024 * 5 {
+        use rand::Rng;
+        let mut rng = rand::rng();
 
-    for byte in data.iter_mut() {
-        *byte = rng.random::<u8>();
+        for byte in data.iter_mut() {
+            *byte = rng.random::<u8>();
+        }
     }
 
     data.zeroize();
+}
+
+fn calculate_hmac(key: &[u8], message: &[u8]) -> Result<Vec<u8>, Errors> {
+    type HMAC = Hmac<Sha3_512>;
+    let mut mac = HMAC::new_from_slice(key).map_err(|e| Errors::InvalidKey(e.to_string()))?;
+    mac.update(message);
+    Ok(mac.finalize().into_bytes().to_vec())
 }
 
 fn encrypt(
@@ -877,12 +903,16 @@ fn encrypt(
     {
         let pwd = blake3::hash(b"atom-crypte-password");
         let pwd = *pwd.as_bytes();
-        let encrypted_version = xor_encrypt(nonce, &pwd, VERSION)?;
+        let encrypted_version = xor_encrypt(nonce, &pwd, &mut VERSION.to_vec())?;
         out_vec.extend(encrypted_version);
     }
 
-    let mut s_block = generate_dynamic_sbox(nonce, &pwd, config);
-    let mut mixed_data = mix_blocks(&mut s_bytes(data, &s_block, config)?, nonce, &pwd, config)?;
+    let mut mixed_data = mix_blocks(
+        &mut s_bytes(data, nonce, &pwd, config)?,
+        nonce,
+        &pwd,
+        config,
+    )?;
     let mut mixed_columns_data = triangle_mix_columns(
         &mut mixed_data,
         &GaloisField::new(config.gf_poly.value()),
@@ -890,26 +920,23 @@ fn encrypt(
     )?;
 
     secure_zeroize(&mut mixed_data);
-    drop(mixed_data);
 
     let mut shifted_data = s_bytes(
         &auto_dynamic_chunk_shift(&mixed_columns_data, nonce, &pwd, config)?,
-        &s_block,
+        nonce,
+        &pwd,
         config,
     )?;
 
-    secure_zeroize(&mut s_block);
     secure_zeroize(&mut mixed_columns_data);
-    drop(mixed_columns_data);
 
     let mut crypted = Vec::new();
-    let mut round_data = xor_encrypt(nonce, &pwd, &shifted_data)?;
+    let mut round_data = xor_encrypt(nonce, &pwd, &mut shifted_data)?;
 
     secure_zeroize(&mut shifted_data);
-    drop(shifted_data);
 
     for i in 0..=config.rounds {
-        let slice_end = std::cmp::min(i * 8, pwd.len());
+        let slice_end = std::cmp::min(i * 16, pwd.len());
         let key = match config.key_length {
             KeyLength::Key256 => blake3::hash(&pwd[..slice_end]).as_bytes().to_vec(),
             KeyLength::Key512 => {
@@ -922,7 +949,8 @@ fn encrypt(
         let crypted_chunks = round_data
             .par_chunks(dynamic_sizes(round_data.len()) as usize)
             .map(|data: &[u8]| {
-                xor_encrypt(nonce, &key, &data).map_err(|e| Errors::InvalidXor(e.to_string()))
+                xor_encrypt(nonce, &key, &mut data.to_vec())
+                    .map_err(|e| Errors::InvalidXor(e.to_string()))
             })
             .collect::<Result<Vec<Vec<u8>>, Errors>>()?
             .into_iter()
@@ -937,13 +965,12 @@ fn encrypt(
         }
     }
 
-    let mut mac_sha = Sha3_512::new();
-    mac_sha.update(&crypted);
-    mac_sha.update(blake3::hash(&xor_encrypt(nonce, &pwd, &data)?).as_bytes());
-    let mac = mac_sha.finalize();
+    let mut data = Vec::from(blake3::hash(&data).as_bytes());
+    data.extend(blake3::hash(&crypted).as_bytes());
+
+    let mac = calculate_hmac(&pwd, &data)?;
 
     secure_zeroize(&mut pwd);
-    drop(pwd);
 
     out_vec.extend(crypted);
     out_vec.extend(mac);
@@ -995,14 +1022,11 @@ fn decrypt(
 
     if !verify_keys_constant_time(&pwd, &expected_password)? {
         secure_zeroize(&mut pwd);
-        drop(pwd);
         secure_zeroize(&mut expected_password);
-        drop(expected_password);
         return Err(Errors::InvalidMac("Invalid key".to_string()));
     }
 
     secure_zeroize(&mut expected_password);
-    drop(expected_password);
 
     if data.len() < 32 + VERSION.len() {
         return Err(Errors::InvalidMac("Data is too short".to_string()));
@@ -1026,25 +1050,15 @@ fn decrypt(
 
     let version_pwd = blake3::hash(b"atom-crypte-password");
     let version_pwd = *version_pwd.as_bytes();
-    let version = xor_decrypt(nonce_byte, &version_pwd, encrypted_version)?;
-    let version_2 = xor_decrypt(nonce_byte, &pwd, encrypted_version)?;
+    let mut encrypted_version = encrypted_version.to_vec();
+    let version = xor_decrypt(nonce_byte, &version_pwd, &mut encrypted_version)?;
 
-    if !version.starts_with(b"atom-version") || !version_2.starts_with(b"atom-version") {
-        if version.starts_with(b"atom-version") || version_2.starts_with(b"atom-version") {
-        } else {
-            secure_zeroize(&mut pwd);
-            drop(pwd);
-            return Err(Errors::InvalidAlgorithm);
-        }
+    if !version.starts_with(b"atom-version") {
+        secure_zeroize(&mut pwd);
+        return Err(Errors::InvalidAlgorithm);
     }
 
-    let (crypted, mac_key) = if version_2.starts_with(b"atom-version:0x2") {
-        let (crypted, mac_key) = rest.split_at(rest.len() - 32);
-
-        (crypted, mac_key)
-    } else if version.starts_with(b"atom-version:0x3") && wrapped
-        || version.starts_with(b"atom-version:0x4") && wrapped
-    {
+    let (crypted, mac_key) = if version.starts_with(b"atom-version:0x5") && wrapped {
         let (crypted, rest) = rest.split_at(rest.len() - 96);
         let (mac_key, _) = rest.split_at(64);
 
@@ -1059,7 +1073,7 @@ fn decrypt(
     let mut round_data = Vec::from(crypted);
 
     for i in (0..=config.rounds).rev() {
-        let slice_end = std::cmp::min(i * 8, pwd.len());
+        let slice_end = std::cmp::min(i * 16, pwd.len());
         let key = match config.key_length {
             KeyLength::Key256 => blake3::hash(&pwd[..slice_end]).as_bytes().to_vec(),
             KeyLength::Key512 => {
@@ -1088,12 +1102,7 @@ fn decrypt(
         }
     }
 
-    let mut xor_decrypted = if version.starts_with(b"atom-version:0x4") {
-        xor_decrypt(nonce_byte, &pwd, &xor_decrypted)
-            .map_err(|e| Errors::InvalidXor(e.to_string()))?
-    } else {
-        xor_decrypted
-    };
+    let mut xor_decrypted = xor_decrypt(nonce_byte, &pwd, &mut xor_decrypted)?;
 
     let mut unshifted = auto_dynamic_chunk_unshift(
         &in_s_bytes(&xor_decrypted, nonce_byte, &pwd, config)?,
@@ -1103,7 +1112,6 @@ fn decrypt(
     )?;
 
     secure_zeroize(&mut xor_decrypted);
-    drop(xor_decrypted);
 
     let mut inversed_columns = inverse_triangle_mix_columns(
         &mut unshifted,
@@ -1114,45 +1122,25 @@ fn decrypt(
 
     secure_zeroize(&mut unshifted);
     secure_zeroize(&mut inversed_columns);
-    drop(unshifted);
-    drop(inversed_columns);
 
     let mut decrypted_data = in_s_bytes(&unmixed, nonce_byte, &pwd, config)?;
 
     secure_zeroize(&mut unmixed);
-    drop(unmixed);
 
-    if version.starts_with(b"atom-version:0x2") {
-        let mac = blake3::keyed_hash(
-            blake3::hash(&crypted).as_bytes(),
-            &xor_encrypt(nonce_byte, &pwd, &decrypted_data)?,
-        ); // Generate a MAC for the data
+    let mut data = Vec::from(blake3::hash(&decrypted_data).as_bytes());
+    data.extend(blake3::hash(&crypted).as_bytes());
 
-        secure_zeroize(&mut pwd);
-        drop(pwd);
+    let mut mac = calculate_hmac(&pwd, &data)?;
 
-        if mac.as_bytes().ct_eq(mac_key).unwrap_u8() != 1 {
-            // Check if the MAC is valid
-            secure_zeroize(&mut decrypted_data);
-            drop(decrypted_data);
-            return Err(Errors::InvalidMac("Invalid authentication".to_string()));
-        }
-    } else {
-        let mut mac_sha = Sha3_512::new();
-        mac_sha.update(crypted);
-        mac_sha.update(blake3::hash(&xor_encrypt(nonce_byte, &pwd, &decrypted_data)?).as_bytes());
-        let mac = mac_sha.finalize();
-
-        secure_zeroize(&mut pwd);
-        drop(pwd);
-
-        if mac.as_slice().ct_eq(mac_key).unwrap_u8() != 1 {
-            // Check if the MAC is valid
-            secure_zeroize(&mut decrypted_data);
-            drop(decrypted_data);
-            return Err(Errors::InvalidMac("Invalid authentication".to_string()));
-        }
+    if mac.ct_eq(mac_key).unwrap_u8() != 1 {
+        // Check if the MAC is valid
+        secure_zeroize(&mut decrypted_data);
+        secure_zeroize(&mut mac);
+        secure_zeroize(&mut data);
+        return Err(Errors::InvalidMac("Invalid authentication".to_string()));
     }
+
+    secure_zeroize(&mut data);
 
     Ok(decrypted_data)
 }

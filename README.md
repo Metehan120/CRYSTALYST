@@ -1,6 +1,6 @@
 # AtomCrypte
 
-📢 Latest Major Release: [v0.4.0 - Steps Toward](CHANGELOGS.md)
+📢 Latest Major Release: [v0.5.0 - Stage 1](CHANGELOGS.md)
 
 - OFFICIAL SITE & DOCUMENTATION: [SITE](https://atomcrypte.zaferoglu.me/main)
 - A high-performance, multi-layered encryption library designed for flexibility, security, and speed.
@@ -15,6 +15,10 @@
 - While it offers strong multi-layered security, including quantum-resilient techniques, it has not undergone formal third-party audits.
 - It has been developed for academic research, cryptographic experimentation, and educational purposes.
 - **Use at your own discretion, and apply additional caution in critical systems.**
+
+## 🚧 Version 0.5 Disclaimer
+- **Not backward-compatible with v0.4.x** due to engine and MAC structure changes.
+- Encrypted files in 0.5.0 must be decrypted using 0.5.0 and above.
 
 ---
 
