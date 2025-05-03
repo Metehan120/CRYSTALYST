@@ -1,7 +1,7 @@
 # AtomCrypte
 📢 Latest Major Release: [v0.5.0 - Stage 1](CHANGELOGS.md)
 
-0.6.0 Releases on MAY 10
+0.6.0 Releases on MAY 6 (GPU Backend support will be removed)
 
 - OFFICIAL SITE & DOCUMENTATION: [SITE](https://atomcrypte.zaferoglu.me/main)
 - A high-performance, multi-layered encryption library designed for flexibility, security, and speed.
