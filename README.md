@@ -1,6 +1,7 @@
 # AtomCrypte
-
 📢 Latest Major Release: [v0.5.0 - Stage 1](CHANGELOGS.md)
+
+0.6.0 Releases on MAY 10
 
 - OFFICIAL SITE & DOCUMENTATION: [SITE](https://atomcrypte.zaferoglu.me/main)
 - A high-performance, multi-layered encryption library designed for flexibility, security, and speed.
@@ -25,7 +26,7 @@
 ## Overview
 
 AtomCrypte is a robust encryption library that combines multiple cryptographic techniques to provide state-of-the-art security with configurable parameters.
-It supports parallel processing, GPU acceleration, and modular cryptographic components, enabling both performance and advanced customization.
+It supports parallel processing, and modular cryptographic components, enabling both performance and advanced customization.
 
 ---
 
@@ -45,8 +46,6 @@ It supports parallel processing, GPU acceleration, and modular cryptographic com
   - **Input Shield:** If input is empty, generates 1 B–8 KB of random “junk.”
   - **Output Decoys:** Appends up to 1 MB of extra random bytes post-encryption to confuse size-based analysis.
 - **Parallel Processing**: Uses Rayon for multicore CPU support.
-- **GPU Acceleration**: OpenCL backend for fast encryption/decryption.
-  ⚠️ Note: Due to current OpenCL driver or platform behavior, minor memory leaks (typically ≤ 100 bytes) may occur during GPU execution. These do not affect cryptographic correctness and are not classified as critical, but future updates aim to address this.
 - **Zeroized Memory**: Automatic clearing of sensitive data in RAM.
 - **Perfect Distribution**:
   - Exhaustive statistical tests confirms near-theoretical perfection:
@@ -76,15 +75,6 @@ It supports parallel processing, GPU acceleration, and modular cryptographic com
 ---
 
 ## Configuration Options
-
-### Device Selection
-```rust
-pub enum DeviceList {
-    Auto,
-    Cpu,
-    Gpu,
-}
-```
 
 ### S-box Generation
 ```rust
@@ -176,7 +166,6 @@ let encrypted = AtomCrypteBuilder::new()
 use atom_crypte::{AtomCrypteBuilder, Config, DeviceList, SboxTypes, IrreduciblePoly};
 
 let config = Config::default()
-    .with_device(DeviceList::Gpu)
     .with_sbox(SboxTypes::PasswordAndNonceBased)
     .set_thread(4)
     .gf_poly(IrreduciblePoly::Custom(0x4d))
@@ -201,7 +190,6 @@ let password = "your_password_here".machine_rng(false); // False means no distro
 ## Performance
 
 - **CPU**: Parallelized via Rayon
-- **GPU**: OpenCL enabled
 - **Benchmarks**: ~100MB ≈ 1s encryption/decryption on average device
 - **Benchmarks**: ~20MB ≈ 1s encryption/decryption on low-end device
 
