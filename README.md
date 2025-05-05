@@ -163,7 +163,7 @@ use atom_crypte::{AtomCrypteBuilder, Config, DeviceList, SboxTypes, IrreducibleP
 
 let config = Config::default()
     .with_sbox(SboxTypes::PasswordAndNonceBased)
-    .set_thread(4)
+    .set_thread(ThreadStrategy::AutoThread)
     .gf_poly(IrreduciblePoly::Custom(0x4d))
     .rounds(6); // 6 ~ 8 Rounds recommended
 ```
