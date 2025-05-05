@@ -1,4 +1,4 @@
-# AtomCrypte Pre-Release Testing Checklist (v0.5.0)
+# AtomCrypte Pre-Release Testing Checklist (v0.6.0)
 
 This document outlines all critical testing procedures that must be completed before publishing a new version of AtomCrypte.
 
@@ -18,7 +18,6 @@ This document outlines all critical testing procedures that must be completed be
 | **Side-Channel (Cache) Shifting Validation** | ✅ | Confirm cache instruction randomization between encryptions. |
 | **Salt & Nonce Correctness Check** | ✅ | Ensure proper uniqueness and secure generation every session. |
 | **Multi-threaded Consistency Testing** | ✅ | Run with Rayon on multiple cores; check output consistency. |
-| **GPU Stability Test** | ✅ | Run OpenCL backend; monitor for memory issues, validate output. |
 | **Key Derivation Hardness Check** | ✅ | Test Argon2 + Blake3 output randomness and resistance. |
 | **MAC Validation (Tamper Resistance)** | ✅ | Corrupt ciphertext and verify decryption fails (InvalidMac). |
 | **Malformed Input Handling** | ✅ | Feed incorrect/partial inputs and expect safe error handling. |
@@ -40,7 +39,6 @@ This document outlines all critical testing procedures that must be completed be
 
 ## Notes
 
-- GPU memory leaks under 100 bytes during OpenCL sessions are currently considered acceptable (documented in known issues).
 - Future releases will aim to introduce automatic test pipelines and formal test coverage reports.
 
 ---

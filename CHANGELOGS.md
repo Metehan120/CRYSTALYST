@@ -1,7 +1,91 @@
+# AtomCrypte v0.6.0 - "Stage 2"
+
+## Overview
+- Biggest update of all time.
+- AtomCrypte now comeswith AVX2 Hardware Support, Fully Rewritten Engine, and Enhanced Security Features.
+
+## Removed:
+- Removed GPU Backend Support
+- Removed Legacy Thread Strategy
+
+## Added:
+
+### 1. **AVX2 Hardware Support**
+- Utilizes AVX2 instructions for optimized encryption and decryption operations.
+- Enhances performance by leveraging SIMD (Single Instruction, Multiple Data) capabilities.
+- Supports modern CPUs with AVX2 instruction set.
+
+### 2. **Fully parallel XOR, Sub, Add**
+- Implements fully parallel operations for XOR, Sub, Add, Shift, and Rotate.
+- Optimizes memory access patterns for improved cache utilization.
+- Gives near performance to AVX2 instructions.
+
+### 3. **Chunk Based Hybrid Encryption**
+- Utilizes chunk-based hybrid encryption for improved security and performance.
+- Enhances security by combining symmetric and asymmetric encryption.
+- Optimizes memory access patterns for improved cache utilization.
+
+### 4. **Fully Rewritten Engine**
+- Redesigned encryption engine with improved parallelism and memory locality.
+- Enhanced security features and resistance against side-channel analysis.
+- Faster execution, improved maintainability
+
+### 5. **Advanced Thread Strategy**
+- AutoThread, FullThread, LowThread, or Custom thread configs
+- Automatically adapts based on CPU load and core count
+- Preserves thermal headroom and maximizes parallel performance
+
+### 6. Recovery Key
+- Generates a unique recovery key for each encryption operation.
+- Using your main Password and Nonce.
+- Recovery Key option (.recovery_key(true))
+
+## 7. Utils and Builder Separated
+
+### 8.1. Utils
+- Benchmark option (.benchmark(true))
+- Recovery Key option (.recovery_key(true))
+- Wrapping option (.wrap_all(true))
+
+### 8.2. Builder
+- Same as before. (AtomCrypteBuilder::new())
+- Benchmark and Wrap All moved to Utils
+
+## Fixes and Enhancements
+1. Overflow Errors
+2. Thread Strategy Improvements
+3. Memory Access Patterns Optimized
+4. Faster Encryption
+5. Faster Decryption
+
+## Performance
+
+### Ryzen 5 3600 Benchmarks (100MB File):
+- **Encryption Speed:** ~50.2 MB/s
+- **Decryption Speed:** ~50.1 MB/s
+- **Compared to v0.5.x:** ~2–3x faster
+
+### On High-end Devices (Ryzen 7-9 7000 - Ryzen 7-9 9000)
+- **Estimated  Encryption Speed:** ~120 MB/s
+- **Estimated Decryption Speed:** ~120 MB/s
+- **Compared to v0.5.x:** ~2–3x faster
+
+### On High-End Server (EPYC/Threadripper expected):
+- **Estimated Encryption:** 300–600 MB/s
+- **Estimated Decryption:** 300–600 MB/s
+- **Compared to v0.5.x:** ~2–3x faster
+
+Performance varies based on thread count and data size.
+
+## Compatibility
+- **Not backward-compatible with v0.5.x** due to engine structure changes.
+
+---
+
 # AtomCrypte v0.5.0 – "Stage 1"
 
 ## Overview
-> The 0.5.0 update marks the **largest internal refactor and performance leap** in AtomCrypte's history. With a redesigned encryption engine, this release delivers unmatched parallel performance, cleaner abstractions, and even better resistance against side-channel analysis.
+> The 0.5.0 update marks the **largest internal refactor and performance leap until 0.5.0** in AtomCrypte's history. With a redesigned encryption engine, this release delivers unmatched parallel performance, cleaner abstractions, and even better resistance against side-channel analysis.
 
 ---
 
@@ -47,12 +131,12 @@
 
 ### Ryzen 5 3600 Benchmarks (100MB File):
 - **Encryption Speed:** ~20.8 MB/s
-- **Decryption Speed:** ~40.4 MB/s
+- **Decryption Speed:** ~20.4 MB/s
 - **Compared to v0.4.x:** ~4–6x faster
 
 ### On High-End Server (EPYC/Threadripper expected):
-- **Estimated Encryption:** 200–400 MB/s
-- **Estimated Decryption:** 300–700 MB/s
+- **Estimated Encryption:** 200–300 MB/s
+- **Estimated Decryption:** 200–300 MB/s
 
 Performance varies based on thread count and data size.
 
@@ -60,17 +144,13 @@ Performance varies based on thread count and data size.
 
 ## Compatibility
 - **Not backward-compatible with v0.4.x** due to engine and MAC structure changes.
-- Encrypted files in 0.5.0 must be decrypted using 0.5.0 and above.
-
-A migration tool is **under consideration** for future patch releases.
-
 ---
 
 ## Roadmap After v0.5.0
 
 ### v0.6.0 → Faster but Better
 - **AVX2** Support: SIMD acceleration.
-- **AVX512** Support: Further SIMD acceleration.
+- **ARM NEON** Support: SIMD acceleration.
 
 ### v0.8.0 → Networked Mode / Remote Secret Key Injection
 

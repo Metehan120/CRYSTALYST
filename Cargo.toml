@@ -1,6 +1,6 @@
 [package]
 name = "atomcrypte"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 description = "A modern, flexible and 'EXPERIMENTAL' cryptographic library for Rust"
 license = "MIT"
@@ -17,11 +17,12 @@ thiserror = "2.0"
 num_cpus = "1"
 argon2 = "0.5"
 zeroize = "1.8"
-ocl = "0.19"
 whoami = "1.6"
 sha3 = "0.10"
 base64 = "0.22"
 hmac = "0.12"
+sysinfo = "0.35.0"
+bytemuck = "1.23"
 
 [profile.release]
 opt-level = 3

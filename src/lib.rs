@@ -206,16 +206,16 @@ use argon2::{Argon2, password_hash::SaltString};
 use base64::{Engine, prelude::BASE64_STANDARD};
 use blake3::derive_key;
 use engine::engine::*;
-use engine::gpu_backend::*;
 use hmac::Hmac;
 use hmac::Mac;
 use rand::{RngCore, TryRngCore, random_range, rngs::OsRng};
 use rayon::prelude::*;
 use sha3::{Digest, Sha3_512};
-use subtle::ConstantTimeEq;
+use subtle::{ConstantTimeEq, ConstantTimeLess};
+use sysinfo::System;
 use thiserror::Error;
 use zeroize::Zeroize;
-mod engine;
+pub mod engine;
 
 static VERSION: &[u8] = b"atom-version:0x5";
 
@@ -255,18 +255,12 @@ pub enum Errors {
     BuildFailed(String),
     #[error("Empty Password")]
     EmptyPassword,
-    #[error("Invalid Password Length, at least need to be 16 bytes")]
-    InvalidPasswordLength,
     #[error("Invalid Key: {0}")]
     InvalidKey(String),
-}
-
-/// Represents different types of devices that can be used for encryption and decryption.
-#[derive(Debug, Clone, Copy)]
-pub enum DeviceList {
-    Auto,
-    Cpu,
-    Gpu,
+    #[error("Base64 Decode Failed: {0}")]
+    Base64DecodeFailed(String),
+    #[error("Password Too Short: {0}")]
+    PasswordTooShort(String),
 }
 
 /// Represents different types of sboxes that can be used for encryption and decryption.
@@ -300,6 +294,26 @@ pub enum KeyLength {
     Key512,
 }
 
+/// Represents whether to always use AVX2 instructions or not.
+/// This can be useful for performance optimization on systems with AVX2 support.
+#[derive(Debug, Clone, Copy)]
+pub enum AlwaysSIMD {
+    True,
+    False,
+}
+
+/// Thread strategy for the encryption and decryption process.
+/// - `AutoThread`: Automatically determine the number of threads to use.
+/// - `FullThread`: Use all available threads.
+/// - `LowThread`: Use a low number of threads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThreadStrategy {
+    AutoThread,
+    FullThread,
+    LowThread,
+    Custom(usize),
+}
+
 /// Configuration for the encryption and decryption process.
 /// - `device`: The device to use for encryption.
 /// - `sbox`: The S-box to use for encryption.
@@ -308,12 +322,12 @@ pub enum KeyLength {
 #[derive(Debug, Clone, Copy)]
 pub struct Config {
     pub rounds: usize,
-    pub device: DeviceList,
     pub sbox: SboxTypes,
-    pub thread_num: usize,
+    pub thread_strategy: ThreadStrategy,
     pub gf_poly: IrreduciblePoly,
     pub key_length: KeyLength,
     pub dummy_data: bool,
+    pub always_avx2: AlwaysSIMD,
 } // For feature use
 
 /// Profile for the encryption and decryption process.
@@ -329,19 +343,48 @@ pub enum Profile {
     Fast,
 }
 
+impl ThreadStrategy {
+    pub fn custom(num_threads: usize) -> Self {
+        Self::Custom(num_threads)
+    }
+
+    pub fn get_cpu_count(&self) -> usize {
+        match self {
+            Self::AutoThread => {
+                let mut sys = System::new();
+                sys.refresh_cpu_usage();
+                let cpu_usage = sys.global_cpu_usage();
+
+                match cpu_usage as u32 {
+                    0..50 => num_cpus::get(),
+                    50..99 => num_cpus::get() / 2,
+                    _ => {
+                        if num_cpus::get() > 2 {
+                            num_cpus::get() / 3
+                        } else {
+                            num_cpus::get() / 2
+                        }
+                    }
+                }
+            }
+            Self::FullThread => num_cpus::get(),
+            Self::LowThread => num_cpus::get() / 2,
+            Self::Custom(num_threads) => *num_threads,
+        }
+    }
+}
+
 impl Default for Config {
     /// Default configuration for the encryption and decryption process.
-    /// For compatibility with older versions set round to 3.
-    /// For compatibility with older versions set key length to 256 bits.
     fn default() -> Self {
         Self {
-            device: DeviceList::Cpu,
             sbox: SboxTypes::PasswordAndNonceBased,
-            thread_num: num_cpus::get(),
+            thread_strategy: ThreadStrategy::AutoThread,
             gf_poly: IrreduciblePoly::AES,
-            rounds: 2,
+            rounds: 1,
             key_length: KeyLength::Key512,
             dummy_data: true,
+            always_avx2: AlwaysSIMD::True,
         }
     }
 }
@@ -354,17 +397,10 @@ impl Config {
         self
     }
 
-    /// Sets the device to use for encryption and decryption.
-    /// - Not recommended changing the device after initialization.
-    pub fn with_device(mut self, device: DeviceList) -> Self {
-        self.device = device;
-        self
-    }
-
     /// Sets the number of threads to use for encryption and decryption.
     /// - Not recommended changing the number of threads after initialization.
-    pub fn set_thread(mut self, num: usize) -> Self {
-        self.thread_num = num;
+    pub fn set_thread(mut self, strategy: ThreadStrategy) -> Self {
+        self.thread_strategy = strategy;
         self
     }
 
@@ -383,7 +419,6 @@ impl Config {
     }
 
     /// Sets the number of rounds to use for encryption and decryption.
-    /// - If you're using with version 0.2.0 data set this to 1.
     /// - Not recommended changing the number of rounds after initialization.
     pub fn rounds(mut self, num: usize) -> Self {
         if num < 1 {
@@ -403,46 +438,48 @@ impl Config {
         self
     }
 
+    pub fn always_avx2(mut self, always_avx2: AlwaysSIMD) -> Self {
+        self.always_avx2 = always_avx2;
+        self
+    }
+
     /// Create a configuration from a profile
-    /// For compatibility on fast profile with older versions set round to 2.
-    /// For compatibility on balanced profile with older versions set round to 3 and key length to Key256.
-    /// For compatibility on secure profile with older versions set round to 3 and KeyLength to Key256.
     pub fn from_profile(profile: Profile) -> Self {
         match profile {
             Profile::Fast => Self {
-                device: DeviceList::Gpu,
                 sbox: SboxTypes::PasswordBased,
-                thread_num: num_cpus::get(),
+                thread_strategy: ThreadStrategy::FullThread,
                 gf_poly: IrreduciblePoly::AES,
                 rounds: 1,
                 key_length: KeyLength::Key256,
                 dummy_data: false,
+                always_avx2: AlwaysSIMD::True,
             },
             Profile::Balanced => Self {
-                device: DeviceList::Auto,
                 sbox: SboxTypes::PasswordAndNonceBased,
-                thread_num: num_cpus::get(),
+                thread_strategy: ThreadStrategy::AutoThread,
                 gf_poly: IrreduciblePoly::AES,
                 rounds: 2,
                 key_length: KeyLength::Key512,
                 dummy_data: false,
+                always_avx2: AlwaysSIMD::True,
             },
             Profile::Secure => Self {
-                device: DeviceList::Cpu,
                 sbox: SboxTypes::PasswordAndNonceBased,
-                thread_num: num_cpus::get(),
+                thread_strategy: ThreadStrategy::AutoThread,
                 gf_poly: IrreduciblePoly::AES,
-                rounds: 4,
+                rounds: 2,
                 key_length: KeyLength::Key512,
+                always_avx2: AlwaysSIMD::True,
                 ..Default::default()
             },
             Profile::Max => Self {
-                device: DeviceList::Cpu,
                 sbox: SboxTypes::PasswordAndNonceBased,
-                thread_num: num_cpus::get(),
+                thread_strategy: ThreadStrategy::FullThread,
                 gf_poly: IrreduciblePoly::AES,
-                rounds: 10,
+                rounds: 4,
                 key_length: KeyLength::Key512,
+                always_avx2: AlwaysSIMD::False,
                 ..Default::default()
             },
         }
@@ -604,8 +641,15 @@ pub struct AtomCrypteBuilder {
     password: Option<String>,
     nonce: Option<NonceData>,
     salt: Option<Salt>,
-    wrap_all: bool,
+    decryption_key: Option<String>,
+    utils: Option<Utils>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Utils {
     benchmark: bool,
+    recovery_key: Option<bool>,
+    wrap_all: bool,
 }
 
 /// Generates a Unique Nonce
@@ -816,44 +860,6 @@ fn verify_keys_constant_time(key1: &[u8], key2: &[u8]) -> Result<bool, Errors> {
     Ok(result)
 }
 
-fn auto_dynamic_chunk_shift(
-    data: &Vec<u8>,
-    nonce: &[u8],
-    password: &[u8],
-    config: Config,
-) -> Result<Vec<u8>, Errors> {
-    match config.device {
-        DeviceList::Cpu => Ok(dynamic_shift(&data, nonce, password, config)?),
-        DeviceList::Gpu => dynamic_shift_gpu(data, nonce, password, config),
-        DeviceList::Auto => {
-            if ocl::Platform::list().is_empty() {
-                Ok(dynamic_shift(&data, nonce, password, config)?)
-            } else {
-                dynamic_shift_gpu(data, nonce, password, config)
-            }
-        }
-    }
-}
-
-fn auto_dynamic_chunk_unshift(
-    data: &Vec<u8>,
-    nonce: &[u8],
-    password: &[u8],
-    config: Config,
-) -> Result<Vec<u8>, Errors> {
-    match config.device {
-        DeviceList::Cpu => Ok(dynamic_unshift(data, nonce, password, config)?),
-        DeviceList::Gpu => dynamic_unshift_gpu(data, nonce, password, config),
-        DeviceList::Auto => {
-            if ocl::Platform::list().is_empty() {
-                Ok(dynamic_unshift(data, nonce, password, config)?)
-            } else {
-                dynamic_unshift_gpu(data, nonce, password, config)
-            }
-        }
-    }
-}
-
 // -----------------------------------------------------
 
 fn secure_zeroize(data: &mut [u8]) {
@@ -876,6 +882,311 @@ fn calculate_hmac(key: &[u8], message: &[u8]) -> Result<Vec<u8>, Errors> {
     Ok(mac.finalize().into_bytes().to_vec())
 }
 
+fn generate_full_wordlist() -> Vec<String> {
+    vec![
+        "APPLE",
+        "BANANA",
+        "CHERRY",
+        "DATE",
+        "ELDERBERRY",
+        "ALPHA",
+        "OMEGA",
+        "UPPER",
+        "STAIR",
+        "LOWER",
+        "99",
+        "23",
+        "83",
+        "61",
+        "TABLE",
+        "CHAIR",
+        "MEMORIES",
+        "GAME",
+        "VIDEO",
+        "FOOTBALL",
+        "BASKETBALL",
+        "CRICKET",
+        "BALL",
+        "COMPUTER",
+        "CPU",
+        "GPU",
+        "ALGORITHM",
+        "BIT",
+        "BYTE",
+        "CODE",
+        "LOGIC",
+        "RUST",
+        "PYTHON",
+        "JAVA",
+        "SWIFT",
+        "KERNEL",
+        "PIXEL",
+        "BLOCK",
+        "CHAIN",
+        "HASH",
+        "MINT",
+        "SNOW",
+        "RAVEN",
+        "FALCON",
+        "NOVA",
+        "JUNO",
+        "TANGO",
+        "ECHO",
+        "LIMA",
+        "ZULU",
+        "DELTA",
+        "VICTOR",
+        "WHISKEY",
+        "XRAY",
+        "YANKIE",
+        "ZETA",
+        "SIGMA",
+        "THETA",
+        "EPSILON",
+        "GAMMA",
+        "NEON",
+        "QUARK",
+        "FLUX",
+        "MOON",
+        "ORBIT",
+        "SUN",
+        "SOLAR",
+        "MARS",
+        "VENUS",
+        "PLUTO",
+        "EARTH",
+        "SATURN",
+        "URANUS",
+        "BINARY",
+        "HEX",
+        "DECIMAL",
+        "CIPHER",
+        "MATRIX",
+        "NODE",
+        "JUPITER",
+        "NEPTUNE",
+        "MERCURY",
+        "COMET",
+        "STAR",
+        "GALAXY",
+        "NEBULA",
+        "COSMIC",
+        "QUANTUM",
+        "PARTICLE",
+        "ATOM",
+        "ELECTRON",
+        "PROTON",
+        "NEUTRON",
+        "WAVE",
+        "ENERGY",
+        "LASER",
+        "PLASMA",
+        "ROCKET",
+        "SHUTTLE",
+        "STATION",
+        "SATELLITE",
+        "ROVER",
+        "LANDER",
+        "MISSION",
+        "LAUNCH",
+        "CLOUD",
+        "DATABASE",
+        "SERVER",
+        "NETWORK",
+        "ROUTER",
+        "SWITCH",
+        "FIREWALL",
+        "PROTOCOL",
+        "WIFI",
+        "BLUETOOTH",
+        "ETHERNET",
+        "MODEM",
+        "BROWSER",
+        "WEBSITE",
+        "INTERNET",
+        "DOMAIN",
+        "EMAIL",
+        "PASSWORD",
+        "USERNAME",
+        "LOGIN",
+        "ACCOUNT",
+        "PROFILE",
+        "AVATAR",
+        "DIGITAL",
+        "VIRTUAL",
+        "REALITY",
+        "AUGMENT",
+        "NEURAL",
+        "CRYPTO",
+        "TOKEN",
+        "WALLET",
+        "SMART",
+        "CONTRACT",
+        "TRANSACTION",
+        "LEDGER",
+        "MINE",
+        "VERIFY",
+        "VALIDATE",
+        "ENCRYPT",
+        "DECRYPT",
+        "SECURE",
+        "KEY",
+        "PRIVATE",
+        "PUBLIC",
+        "OCEAN",
+        "RIVER",
+        "LAKE",
+        "MOUNTAIN",
+        "FOREST",
+        "DESERT",
+        "ARCTIC",
+        "TROPICS",
+        "PRAIRIE",
+        "CANYON",
+        "VALLEY",
+        "REEF",
+        "ISLAND",
+        "BEACH",
+        "COAST",
+        "VOLCANO",
+        "GLACIER",
+        "STORM",
+        "THUNDER",
+        "LIGHTNING",
+        "RAINBOW",
+        "SUNRISE",
+        "SUNSET",
+        "HORIZON",
+        "ZENITH",
+        "NADIR",
+        "DRAGON",
+        "PHOENIX",
+        "GRIFFIN",
+        "UNICORN",
+        "KRAKEN",
+        "HYDRA",
+        "SPHINX",
+        "PEGASUS",
+        "MINOTAUR",
+        "CENTAUR",
+        "SIREN",
+        "CHIMERA",
+        "TITAN",
+        "CYCLOPS",
+        "MEDUSA",
+        "LIBRARY",
+        "MUSEUM",
+        "GALLERY",
+        "THEATER",
+        "CINEMA",
+        "CONCERT",
+        "STADIUM",
+        "ARENA",
+        "PLAZA",
+        "GARDEN",
+        "PARK",
+        "BRIDGE",
+        "TOWER",
+        "CASTLE",
+        "PALACE",
+        "TEMPLE",
+        "PYRAMID",
+        "GUITAR",
+        "PIANO",
+        "VIOLIN",
+        "TRUMPET",
+        "DRUMS",
+        "FLUTE",
+        "SAXOPHONE",
+        "HARP",
+        "ACCORDION",
+        "MELODY",
+        "HARMONY",
+        "RHYTHM",
+        "TEMPO",
+        "BEAR",
+        "CLOCK",
+        "WATCH",
+        "CALENDAR",
+        "DIAMOND",
+        "RUBY",
+        "EMERALD",
+        "SAPPHIRE",
+        "PEARL",
+        "JADE",
+        "OPAL",
+        "AMBER",
+        "CRYSTAL",
+        "GOLD",
+        "SILVER",
+        "PLATINUM",
+        "COPPER",
+        "IRON",
+        "STEEL",
+        "BRONZE",
+        "MARBLE",
+        "GRANITE",
+        "BREEZE",
+        "GUST",
+        "TORNADO",
+        "HURRICANE",
+        "TYPHOON",
+        "CYCLONE",
+        "BLIZZARD",
+        "AVALANCHE",
+        "TSUNAMI",
+        "EARTHQUAKE",
+        "PLANET",
+        "METEOR",
+        "ASTEROID",
+        "TELESCOPE",
+        "MICROSCOPE",
+        "COMPASS",
+        "SEXTANT",
+    ]
+    .iter()
+    .map(|byte| byte.to_string())
+    .collect()
+}
+
+fn generate_recovery_key(key: &[u8], nonce: &[u8]) -> String {
+    let word_list = generate_full_wordlist();
+    let mut key = key.to_vec();
+
+    key.iter_mut()
+        .enumerate()
+        .for_each(|(i, b)| *b = b.wrapping_add(nonce[i % nonce.len()]));
+
+    let words: Vec<&str> = key
+        .iter()
+        .map(|&byte| word_list[byte as usize].as_str())
+        .collect();
+
+    words.join("-")
+}
+
+fn parse_recovery_key(input: &str, nonce: &[u8]) -> Result<Vec<u8>, Errors> {
+    let word_list = generate_full_wordlist();
+
+    let word_map: std::collections::HashMap<String, u8> = word_list
+        .iter()
+        .enumerate()
+        .map(|(i, word)| (word.to_ascii_uppercase(), i as u8))
+        .collect();
+
+    let mut key = input
+        .split('-')
+        .map(|word| word_map.get(&word.to_ascii_uppercase()).copied())
+        .collect::<Option<Vec<u8>>>()
+        .ok_or_else(|| Errors::EmptyPassword)?;
+
+    key.iter_mut()
+        .enumerate()
+        .for_each(|(i, b)| *b = b.wrapping_sub(nonce[i % nonce.len()]));
+
+    Ok(key)
+}
+
 fn encrypt(
     password: &str,
     data: &[u8],
@@ -883,9 +1194,29 @@ fn encrypt(
     config: Config,
     custom_salt: Option<Salt>,
     wrap_all: bool,
+    recovery_key: Option<bool>,
 ) -> Result<Vec<u8>, Errors> {
+    let key_len = match config.key_length {
+        KeyLength::Key256 => 32,
+        KeyLength::Key512 => 64,
+    };
+
     if password.len().ct_ne(&0).unwrap_u8() != 1 {
         return Err(Errors::EmptyPassword);
+    } else if (password.len() as u32).ct_lt(&key_len).unwrap_u8() == 1 {
+        return Err(Errors::PasswordTooShort(format!(
+            "Password must be at least {} characters for cryptographic strength.",
+            key_len
+        )));
+    }
+
+    if let Some(recovery_key) = recovery_key {
+        if recovery_key == true {
+            println!(
+                "Recovery Key: {}",
+                generate_recovery_key(password.as_bytes(), nonce.as_bytes())
+            );
+        }
     }
 
     let nonce = nonce.as_bytes();
@@ -903,7 +1234,7 @@ fn encrypt(
     {
         let pwd = blake3::hash(b"atom-crypte-password");
         let pwd = *pwd.as_bytes();
-        let encrypted_version = xor_encrypt(nonce, &pwd, &mut VERSION.to_vec())?;
+        let encrypted_version = xor_encrypt(nonce, &pwd, &mut VERSION.to_vec(), config)?;
         out_vec.extend(encrypted_version);
     }
 
@@ -922,7 +1253,7 @@ fn encrypt(
     secure_zeroize(&mut mixed_data);
 
     let mut shifted_data = s_bytes(
-        &auto_dynamic_chunk_shift(&mixed_columns_data, nonce, &pwd, config)?,
+        &dynamic_shift(&mut mixed_columns_data, nonce, &pwd, config)?,
         nonce,
         &pwd,
         config,
@@ -931,7 +1262,7 @@ fn encrypt(
     secure_zeroize(&mut mixed_columns_data);
 
     let mut crypted = Vec::new();
-    let mut round_data = xor_encrypt(nonce, &pwd, &mut shifted_data)?;
+    let mut round_data = xor_encrypt(nonce, &pwd, &mut shifted_data, config)?;
 
     secure_zeroize(&mut shifted_data);
 
@@ -949,7 +1280,7 @@ fn encrypt(
         let crypted_chunks = round_data
             .par_chunks(dynamic_sizes(round_data.len()) as usize)
             .map(|data: &[u8]| {
-                xor_encrypt(nonce, &key, &mut data.to_vec())
+                xor_encrypt(nonce, &key, &mut data.to_vec(), config)
                     .map_err(|e| Errors::InvalidXor(e.to_string()))
             })
             .collect::<Result<Vec<Vec<u8>>, Errors>>()?
@@ -999,6 +1330,7 @@ fn decrypt(
     config: Config,
     custom_salt: Option<Salt>,
     wrap_all: bool,
+    recovery_key: Option<String>,
 ) -> Result<Vec<u8>, Errors> {
     let (nonce_data, custom_salt) = if let Some(nonce) = nonce {
         (nonce, custom_salt)
@@ -1011,9 +1343,15 @@ fn decrypt(
 
     let nonce_byte = nonce_data.as_bytes();
 
-    let password_hash: [u8; 32] = derive_key(password, nonce_byte);
+    let password = if let Some(key) = recovery_key {
+        String::from_utf8_lossy(&parse_recovery_key(&key, nonce_byte)?).to_string()
+    } else {
+        password.to_string()
+    };
+
+    let password_hash: [u8; 32] = derive_key(password.as_str(), nonce_byte);
     let mut expected_password = derive_password_key(
-        &derive_key(password, nonce_byte),
+        &derive_key(password.as_str(), nonce_byte),
         nonce_byte,
         custom_salt,
         config,
@@ -1051,7 +1389,7 @@ fn decrypt(
     let version_pwd = blake3::hash(b"atom-crypte-password");
     let version_pwd = *version_pwd.as_bytes();
     let mut encrypted_version = encrypted_version.to_vec();
-    let version = xor_decrypt(nonce_byte, &version_pwd, &mut encrypted_version)?;
+    let version = xor_decrypt(nonce_byte, &version_pwd, &mut encrypted_version, config)?;
 
     if !version.starts_with(b"atom-version") {
         secure_zeroize(&mut pwd);
@@ -1087,7 +1425,8 @@ fn decrypt(
             .to_vec()
             .par_chunks_mut(dynamic_sizes(round_data.len()) as usize)
             .map(|data: &mut [u8]| {
-                xor_decrypt(nonce_byte, &key, data).map_err(|e| Errors::InvalidXor(e.to_string()))
+                xor_decrypt(nonce_byte, &key, data, config)
+                    .map_err(|e| Errors::InvalidXor(e.to_string()))
             })
             .collect::<Result<Vec<Vec<u8>>, Errors>>()?
             .into_iter()
@@ -1102,10 +1441,10 @@ fn decrypt(
         }
     }
 
-    let mut xor_decrypted = xor_decrypt(nonce_byte, &pwd, &mut xor_decrypted)?;
+    let mut xor_decrypted = xor_decrypt(nonce_byte, &pwd, &mut xor_decrypted, config)?;
 
-    let mut unshifted = auto_dynamic_chunk_unshift(
-        &in_s_bytes(&xor_decrypted, nonce_byte, &pwd, config)?,
+    let mut unshifted = dynamic_unshift(
+        &in_s_bytes(&mut xor_decrypted, nonce_byte, &pwd, config)?,
         nonce_byte,
         &pwd,
         config,
@@ -1162,6 +1501,31 @@ impl AsBase for Vec<u8> {
     }
 }
 
+impl Utils {
+    pub fn new() -> Self {
+        Self {
+            recovery_key: None,
+            benchmark: false,
+            wrap_all: false,
+        }
+    }
+
+    pub fn benchmark(mut self, benchmark: bool) -> Self {
+        self.benchmark = benchmark;
+        self
+    }
+
+    pub fn recovery_key(mut self, recovery_key: bool) -> Self {
+        self.recovery_key = Some(recovery_key);
+        self
+    }
+
+    pub fn wrap_all(mut self, wrap_all: bool) -> Self {
+        self.wrap_all = wrap_all;
+        self
+    }
+}
+
 impl AtomCrypteBuilder {
     /// Creates a new instance of AtomCrypteBuilder.
     pub fn new() -> Self {
@@ -1171,8 +1535,8 @@ impl AtomCrypteBuilder {
             config: None,
             nonce: None,
             salt: None,
-            wrap_all: false,
-            benchmark: false,
+            decryption_key: None,
+            utils: None,
         }
     }
 
@@ -1207,15 +1571,14 @@ impl AtomCrypteBuilder {
         self
     }
 
-    /// Sets the wrap_all flag for the encryption.
-    pub fn wrap_all(mut self, wrap_all: bool) -> Self {
-        self.wrap_all = wrap_all;
+    /// Sets the recovery decryption key for the decryption.
+    pub fn decrypt_from_recovery_key(mut self, decryption_key: String) -> Self {
+        self.decryption_key = Some(decryption_key);
         self
     }
 
-    /// Sets the benchmark flag for the encryption.
-    pub fn benchmark(mut self) -> Self {
-        self.benchmark = true;
+    pub fn utils(mut self, utils: Utils) -> Self {
+        self.utils = Some(utils);
         self
     }
 
@@ -1242,17 +1605,40 @@ impl AtomCrypteBuilder {
             .nonce
             .ok_or_else(|| Errors::BuildFailed("Missing Nonce".to_string()))?;
         let salt = self.salt;
-        let benchmark = self.benchmark;
-        let wrap_all = self.wrap_all;
+        let (recovery_key, benchmark, wrap_all) = if let Some(reocvery_key) = self.utils {
+            (
+                reocvery_key.recovery_key,
+                reocvery_key.benchmark,
+                reocvery_key.wrap_all,
+            )
+        } else {
+            (None, false, false)
+        };
 
         if benchmark {
             let start = Instant::now();
-            let out = encrypt(password.as_str(), &data, nonce, config, salt, wrap_all)?;
+            let out = encrypt(
+                password.as_str(),
+                &data,
+                nonce,
+                config,
+                salt,
+                wrap_all,
+                recovery_key,
+            )?;
             let duration = start.elapsed();
             println!("Encryption took {}ms", duration.as_millis());
             Ok(out)
         } else {
-            encrypt(password.as_str(), &data, nonce, config, salt, wrap_all)
+            encrypt(
+                password.as_str(),
+                &data,
+                nonce,
+                config,
+                salt,
+                wrap_all,
+                recovery_key,
+            )
         }
     }
 
@@ -1277,17 +1663,37 @@ impl AtomCrypteBuilder {
             .ok_or_else(|| Errors::BuildFailed("Missing Password".to_string()))?;
         let nonce = self.nonce;
         let salt = self.salt;
-        let benchmark = self.benchmark;
-        let wrap_all = self.wrap_all;
+        let recovery_key = self.decryption_key;
+        let (benchmark, wrap_all) = if let Some(utils) = self.utils {
+            (utils.benchmark, utils.wrap_all)
+        } else {
+            (false, false)
+        };
 
         if benchmark {
             let start = Instant::now();
-            let out = decrypt(password.as_str(), &data, nonce, config, salt, wrap_all);
+            let out = decrypt(
+                password.as_str(),
+                &data,
+                nonce,
+                config,
+                salt,
+                wrap_all,
+                recovery_key,
+            );
             let duration = start.elapsed();
             println!("Decryption took {}ms", duration.as_millis());
             out
         } else {
-            decrypt(password.as_str(), &data, nonce, config, salt, wrap_all)
+            decrypt(
+                password.as_str(),
+                &data,
+                nonce,
+                config,
+                salt,
+                wrap_all,
+                recovery_key,
+            )
         }
     }
 }

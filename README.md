@@ -1,7 +1,5 @@
 # AtomCrypte
-📢 Latest Major Release: [v0.5.0 - Stage 1](CHANGELOGS.md)
-
-0.6.0 Releases on MAY 6 (GPU Backend support will be removed)
+📢 Latest Major Release: [v0.6.0 - Stage 2](CHANGELOGS.md)
 
 - OFFICIAL SITE & DOCUMENTATION: [SITE](https://atomcrypte.zaferoglu.me/main)
 - A high-performance, multi-layered encryption library designed for flexibility, security, and speed.
@@ -17,9 +15,8 @@
 - It has been developed for academic research, cryptographic experimentation, and educational purposes.
 - **Use at your own discretion, and apply additional caution in critical systems.**
 
-## 🚧 Version 0.5 Disclaimer
-- **Not backward-compatible with v0.4.x** due to engine and MAC structure changes.
-- Encrypted files in 0.5.0 must be decrypted using 0.5.0 and above.
+## 🚧 Version 0.6 Disclaimer
+- **Not backward-compatible with v0.5.x** due to engine changes.
 
 ---
 
@@ -31,7 +28,8 @@ It supports parallel processing, and modular cryptographic components, enabling 
 ---
 
 ## Key Features
-
+- **Recovery Key**: Generates recovery key based on your main Password and Nonce.
+- **SIMD Support**: Processing through single instruction but mutliple data. (Performance boost)
 - **512-bit Key Support**: Supports keys of up to 512 bits for enhanced security.
 - **Constant-Time Execution (Locally Verified)**: All critical operations are implemented to run in constant time, minimizing timing side-channel risks. While extensive local testing confirms stability across various inputs, third-party validation is recommended for formal assurance.
 - **Salt Support**: Cryptographic salt generation using `Salt::new()` to prevent rainbow table attacks.
@@ -121,14 +119,14 @@ use atom_crypte::{AtomCrypteBuilder, Config, Profile, Rng, Nonce};
 
 let nonce = Nonce::nonce(Rng::osrng());
 let config = Config::default();
+let utils = Utils::new().wrap_all(true).benchmark(true);
 
 let encrypted = AtomCrypteBuilder::new()
     .data("Hello, world!".as_bytes())
     .password("secure_password")
     .nonce(nonce)
     .config(config)
-    .wrap_all(true) // Optional
-    .benchmark() // Optional
+    .utils(utils)
     .encrypt()
     .expect("Encryption failed");
 
@@ -136,8 +134,7 @@ let decrypted = AtomCrypteBuilder::new()
     .data(&encrypted)
     .password("secure_password")
     .config(config)
-    .wrap_all(true) // Optional
-    .benchmark() // Optional
+    .utils(utils)
     .decrypt()
     .expect("Decryption failed");
 
@@ -151,9 +148,8 @@ let encrypted = AtomCrypteBuilder::new()
     .password("your_password")
     .nonce(Nonce::nonce(Rng::osrng()))
     .config(Config::default())
-    .wrap_all(true) // Optional
+    .utils(utils)
     .salt(salt) // Optional but recommended
-    .benchmark() // Optional
     .encrypt()
     .expect("Encryption failed");
 
@@ -209,7 +205,7 @@ let password = "your_password_here".machine_rng(false); // False means no distro
 - Test Suite
 - Kyber (PQC) integration
 - Recovery key fallback
-- Machine-level access controls
+- Machine-level access controls (Kind of done via AVX2 support)
 
 ## License
 

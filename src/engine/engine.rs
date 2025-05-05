@@ -1,4 +1,4 @@
-use crate::{Config, Errors, KeyLength, SboxTypes};
+use crate::{AlwaysSIMD, Config, Errors, KeyLength, SboxTypes};
 use rayon::{ThreadPool, prelude::*};
 use sha3::{Digest, Sha3_512};
 use std::{
@@ -7,6 +7,8 @@ use std::{
 };
 use subtle::ConstantTimeEq;
 use zeroize::Zeroize;
+
+use super::simd::{avx2_add, avx2_sub, avx2_xor};
 
 static THREAD_POOL: OnceLock<ThreadPool> = OnceLock::new();
 static KEY_CACHE_MAP: OnceLock<RwLock<HashMap<(Vec<u8>, Vec<u8>), Vec<u8>>>> = OnceLock::new();
@@ -120,20 +122,114 @@ impl GaloisField {
     }
 }
 
-pub fn parallel_xor(data: &[u8], key: &[u8]) -> Vec<u8> {
+fn avx2_chunking(data_length: usize) -> usize {
+    match data_length {
+        0..=100 => 64,
+        0..=1000 => 256,
+        0..=10000 => 4096,
+        0..=100000 => 16384,
+        0..=1000000 => 32768,
+        0..=10000000 => 131072,
+        0..=100000000 => 1048576,
+        0..=1000000000 => 16777216,
+        0..=10000000000 => 134217728,
+        0..=100000000000 => 536870912,
+        0..=1000000000000 => 1073741824,
+        0..=10000000000000 => 4294967296,
+        0..=100000000000000 => 8589934592,
+        0..=1000000000000000 => 17179869184,
+        _ => unreachable!(),
+    }
+}
+
+fn parallel_xor(data: &[u8], key: &[u8], pool: &ThreadPool) -> Vec<u8> {
     let mut output = vec![0u8; data.len()]; // içi dolu olsun
 
-    let size = data.len() as usize;
-    output
-        .par_chunks_mut(dynamic_sizes(size) as usize)
-        .zip(data.par_chunks(dynamic_sizes(size) as usize))
-        .for_each(|(out_chunk, in_chunk)| {
-            for (i, &byte) in in_chunk.iter().enumerate() {
-                out_chunk[i] = byte ^ key[i % key.len()];
-            }
-        });
+    pool.install(|| {
+        let size = data.len() as usize;
+        output
+            .par_chunks_mut(dynamic_sizes(size) as usize)
+            .zip(data.par_chunks(dynamic_sizes(size) as usize))
+            .for_each(|(out_chunk, in_chunk)| {
+                for (i, &byte) in in_chunk.iter().enumerate() {
+                    out_chunk[i] = byte ^ key[i % key.len()];
+                }
+            });
+    });
 
     output
+}
+
+fn parallel_add(data: &[u8], key: &[u8], pool: &ThreadPool) -> Vec<u8> {
+    let mut output = vec![0u8; data.len()]; // içi dolu olsun
+
+    pool.install(|| {
+        let size = data.len() as usize;
+        output
+            .par_chunks_mut(dynamic_sizes(size) as usize)
+            .zip(data.par_chunks(dynamic_sizes(size) as usize))
+            .for_each(|(out_chunk, in_chunk)| {
+                for (i, &byte) in in_chunk.iter().enumerate() {
+                    out_chunk[i] = byte.wrapping_add(key[i % key.len()]);
+                }
+            });
+    });
+
+    output
+}
+
+fn parallel_sub(data: &[u8], key: &[u8], pool: &ThreadPool) -> Vec<u8> {
+    let mut output = vec![0u8; data.len()]; // içi dolu olsun
+
+    pool.install(|| {
+        let size = data.len() as usize;
+        output
+            .par_chunks_mut(dynamic_sizes(size) as usize)
+            .zip(data.par_chunks(dynamic_sizes(size) as usize))
+            .for_each(|(out_chunk, in_chunk)| {
+                for (i, &byte) in in_chunk.iter().enumerate() {
+                    out_chunk[i] = byte.wrapping_sub(key[i % key.len()]);
+                }
+            });
+    });
+
+    output
+}
+
+fn xor(data: &[u8], key: &[u8], config: Config) -> Vec<u8> {
+    if is_x86_feature_detected!("avx2") && data.len() % 32 == 0 {
+        unsafe { avx2_xor(data, key) }
+    } else {
+        parallel_xor(
+            data,
+            key,
+            get_thread_pool(config.thread_strategy.get_cpu_count()),
+        )
+    }
+}
+
+fn add(data: &[u8], key: &[u8], config: Config) -> Vec<u8> {
+    if is_x86_feature_detected!("avx2") && data.len() % 32 == 0 {
+        unsafe { avx2_add(data, key) }
+    } else {
+        parallel_add(
+            data,
+            key,
+            get_thread_pool(config.thread_strategy.get_cpu_count()),
+        )
+    }
+}
+
+fn sub(data: &[u8], key: &[u8], config: Config) -> Vec<u8> {
+    if is_x86_feature_detected!("avx2") && data.len() % 32 == 0 {
+        unsafe { avx2_sub(data, key) }
+    } else {
+        parallel_sub(
+            data,
+            key,
+            get_thread_pool(config.thread_strategy.get_cpu_count()),
+        )
+    }
 }
 
 pub fn triangle_mix_columns(
@@ -160,7 +256,7 @@ pub fn triangle_mix_columns(
         false => {}
     }
 
-    let pool = get_thread_pool(config.thread_num);
+    let pool = get_thread_pool(config.thread_strategy.get_cpu_count());
 
     pool.install(|| {
         data.par_chunks_exact_mut(3).for_each(|chunk| {
@@ -201,7 +297,7 @@ pub fn inverse_triangle_mix_columns(
         false => {}
     }
 
-    let pool = get_thread_pool(config.thread_num);
+    let pool = get_thread_pool(config.thread_strategy.get_cpu_count());
 
     pool.install(|| {
         data.par_chunks_exact_mut(3).for_each(|chunk| {
@@ -227,7 +323,12 @@ pub fn inverse_triangle_mix_columns(
     Ok(data.to_vec())
 }
 
-pub fn xor_encrypt(nonce: &[u8], pwd: &[u8], input: &mut [u8]) -> Result<Vec<u8>, Errors> {
+pub fn xor_encrypt(
+    nonce: &[u8],
+    pwd: &[u8],
+    input: &mut [u8],
+    config: Config,
+) -> Result<Vec<u8>, Errors> {
     let mut dummy_vec;
     let input: &mut [u8] = if input.is_empty() {
         dummy_vec = (0..7642).map(|_| rand::random::<u8>()).collect::<Vec<u8>>();
@@ -236,22 +337,30 @@ pub fn xor_encrypt(nonce: &[u8], pwd: &[u8], input: &mut [u8]) -> Result<Vec<u8>
         input
     };
 
-    let out = input
-        .into_par_iter()
-        .enumerate()
-        .map(|(i, b)| {
-            let mut masked =
-                b.rotate_left((nonce[i % nonce.len()] ^ pwd[i % pwd.len()] % 8) as u32); // Rotate the byte left by the nonce value
-
-            masked = masked.wrapping_add(pwd[i % pwd.len()]); // Add the password to the byte
-            masked = masked.wrapping_add(nonce[i % nonce.len()]); // Add the nonce to the byte
-
-            masked
-        })
-        .collect::<Vec<u8>>();
-
-    let key = parallel_xor(nonce, pwd);
-    let out = parallel_xor(&out, &key);
+    let key = key_cache(nonce, pwd, &config);
+    let out = match config.always_avx2 {
+        AlwaysSIMD::True => input
+            .par_chunks(avx2_chunking(input.len()))
+            .flat_map(|chunk| {
+                let mut input = xor(&chunk, &key, config);
+                input
+                    .par_iter_mut()
+                    .enumerate()
+                    .for_each(|(i, b)| *b = b.rotate_left(key[i % key.len()] as u32));
+                let out = add(&input, &key, config);
+                out
+            })
+            .collect(),
+        AlwaysSIMD::False => {
+            let mut input = xor(&input, &key, config);
+            input
+                .par_iter_mut()
+                .enumerate()
+                .for_each(|(i, b)| *b = b.rotate_left(key[i % key.len()] as u32));
+            let out = add(&input, &key, config);
+            out
+        }
+    };
 
     match out.is_empty() {
         true => return Err(Errors::InvalidXor("Empty vector".to_string())),
@@ -259,7 +368,12 @@ pub fn xor_encrypt(nonce: &[u8], pwd: &[u8], input: &mut [u8]) -> Result<Vec<u8>
     }
 }
 
-pub fn xor_decrypt(nonce: &[u8], pwd: &[u8], input: &mut [u8]) -> Result<Vec<u8>, Errors> {
+pub fn xor_decrypt(
+    nonce: &[u8],
+    pwd: &[u8],
+    input: &mut [u8],
+    config: Config,
+) -> Result<Vec<u8>, Errors> {
     let mut dummy_vec;
     let input: &mut [u8] = if input.is_empty() {
         dummy_vec = (0..7642).map(|_| rand::random::<u8>()).collect::<Vec<u8>>();
@@ -268,22 +382,28 @@ pub fn xor_decrypt(nonce: &[u8], pwd: &[u8], input: &mut [u8]) -> Result<Vec<u8>
         input
     };
 
-    let key = parallel_xor(nonce, pwd);
-    let input = parallel_xor(&input, &key);
-
-    let out = input
-        .into_par_iter()
-        .enumerate()
-        .map(|(i, b)| {
-            let masked = b.wrapping_sub(nonce[i % nonce.len()]); // Subtract the nonce from the byte
-            let masked = masked.wrapping_sub(pwd[i % pwd.len()]); // Subtract the password from the byte
-
-            let masked =
-                masked.rotate_right((nonce[i % nonce.len()] ^ pwd[i % pwd.len()] % 8) as u32); // Rotate the byte right by the nonce value
-
-            masked
-        })
-        .collect::<Vec<u8>>();
+    let key = key_cache(nonce, pwd, &config);
+    let out = match config.always_avx2 {
+        AlwaysSIMD::True => input
+            .par_chunks(avx2_chunking(input.len()))
+            .flat_map(|chunk| {
+                let mut input = sub(&chunk, &key, config);
+                input
+                    .par_iter_mut()
+                    .enumerate()
+                    .for_each(|(i, b)| *b = b.rotate_right(key[i % key.len()] as u32));
+                xor(&input, &key, config)
+            })
+            .collect(),
+        AlwaysSIMD::False => {
+            let mut input = sub(&input, &key, config);
+            input
+                .par_iter_mut()
+                .enumerate()
+                .for_each(|(i, b)| *b = b.rotate_right(key[i % key.len()] as u32));
+            xor(&input, &key, config)
+        }
+    };
 
     match out.is_empty() {
         true => return Err(Errors::InvalidXor("Empty vector".to_string())), // If out vector is empty then returns an Error
@@ -318,7 +438,7 @@ pub fn mix_blocks(
         false => {}
     }
 
-    let pool = get_thread_pool(config.thread_num);
+    let pool = get_thread_pool(config.thread_strategy.get_cpu_count());
 
     if data.len().ct_eq(&3).unwrap_u8() == 1 {
         return Ok(data.to_vec()); // If data len <
@@ -378,7 +498,7 @@ pub fn unmix_blocks(
         false => {}
     }
 
-    let pool = get_thread_pool(config.thread_num);
+    let pool = get_thread_pool(config.thread_strategy.get_cpu_count());
 
     if data.len().ct_eq(&3).unwrap_u8() == 1 {
         return Ok(data.to_vec());
@@ -448,14 +568,14 @@ pub fn in_s_bytes(data: &[u8], nonce: &[u8], pwd: &[u8], cfg: Config) -> Result<
 
     sbox.zeroize();
 
-    let pool = get_thread_pool(cfg.thread_num);
+    let pool = get_thread_pool(cfg.thread_strategy.get_cpu_count());
 
     Ok(pool.install(|| data.par_iter().map(|b| inv_sbox[*b as usize]).collect())) // Inverse the sbox
 }
 
 pub fn s_bytes(data: &[u8], nonce: &[u8], pwd: &[u8], cfg: Config) -> Result<Vec<u8>, Errors> {
     let sbox = generate_dynamic_sbox(nonce, pwd, cfg); // Generate the sbox
-    let pool = get_thread_pool(cfg.thread_num);
+    let pool = get_thread_pool(cfg.thread_strategy.get_cpu_count());
 
     Ok(pool.install(|| data.par_iter().map(|b| sbox[*b as usize]).collect())) // Apply the sbox
 }
@@ -507,39 +627,46 @@ pub fn dynamic_shift(
     config: Config,
 ) -> Result<Vec<u8>, Errors> {
     let key = key_cache(nonce, password, &config);
-
-    let pool = get_thread_pool(config.thread_num);
-
     let chunk_sizes = get_chunk_sizes(data.len(), nonce, &key, config);
+
+    let mut offsets = Vec::with_capacity(chunk_sizes.len());
+    let mut cursor = 0;
+    for size in &chunk_sizes {
+        offsets.push((cursor, *size));
+        cursor += *size;
+    }
 
     let mut dummy_data: Vec<u8> = Vec::new();
 
-    for _i in 0..rand::random_range(0..1048576) {
-        dummy_data.push(rand::random::<u8>());
+    match config.dummy_data {
+        true => {
+            for _i in 0..rand::random_range(0..1048576) {
+                dummy_data.push(rand::random::<u8>());
+            }
+        }
+        false => {}
     }
 
-    let mut shifted = Vec::with_capacity(data.len());
-    let mut cursor = 0;
+    let pool = get_thread_pool(config.thread_strategy.get_cpu_count());
 
-    for (i, size) in chunk_sizes.iter().enumerate() {
-        let mut chunk = data[cursor..cursor + size].to_vec();
+    let result: Vec<u8> = pool.install(|| {
+        offsets
+            .par_iter()
+            .enumerate()
+            .flat_map(|(i, (start, size))| {
+                let mut chunk = data[*start..(*start + *size)].to_vec();
+                let rotate_by = (nonce[i % nonce.len()] % 8) as u32;
 
-        let rotate_by = (nonce[i % nonce.len()] % 8) as u32; // Rotate the byte left by the nonce value
+                chunk
+                    .par_iter_mut()
+                    .for_each(|b| *b = b.rotate_left(rotate_by));
 
-        pool.install(|| {
-            chunk.par_iter_mut().for_each(|b| {
-                *b = b.rotate_left(rotate_by); // Rotate the byte left by the nonce value
-            });
+                xor(&chunk, &key, config)
+            })
+            .collect()
+    });
 
-            let chunk = parallel_xor(&chunk, &key);
-
-            shifted.par_extend(chunk);
-            cursor += size; // Move the cursor to the next chunk
-        })
-    }
-
-    shifted = shifted.iter().rev().cloned().collect::<Vec<u8>>();
-    Ok(shifted)
+    Ok(result.par_iter().rev().cloned().collect::<Vec<u8>>())
 }
 
 pub fn dynamic_unshift(
@@ -548,38 +675,48 @@ pub fn dynamic_unshift(
     password: &[u8],
     config: Config,
 ) -> Result<Vec<u8>, Errors> {
-    let data = data.iter().rev().cloned().collect::<Vec<u8>>();
+    let data = data.par_iter().rev().cloned().collect::<Vec<u8>>();
     let key = key_cache(nonce, password, &config);
-
-    let pool = get_thread_pool(config.thread_num);
 
     let chunk_sizes = get_chunk_sizes(data.len(), nonce, &key, config);
 
+    let mut offsets = Vec::with_capacity(chunk_sizes.len());
+    let mut cursor = 0;
+    for size in &chunk_sizes {
+        offsets.push((cursor, *size));
+        cursor += *size;
+    }
+
     let mut dummy_data: Vec<u8> = Vec::new();
 
-    for _i in 0..rand::random_range(0..1048576) {
-        dummy_data.push(rand::random::<u8>());
+    match config.dummy_data {
+        true => {
+            for _i in 0..rand::random_range(0..1048576) {
+                dummy_data.push(rand::random::<u8>());
+            }
+        }
+        false => {}
     }
 
-    let mut original = Vec::with_capacity(data.len());
-    let mut cursor = 0;
+    let pool = get_thread_pool(config.thread_strategy.get_cpu_count());
 
-    for (i, size) in chunk_sizes.iter().enumerate() {
-        let chunk = data[cursor..cursor + size].to_vec();
+    pool.install(|| {
+        let result: Vec<u8> = offsets
+            .par_iter()
+            .enumerate()
+            .flat_map(|(i, (start, size))| {
+                let chunk = &data[*start..(*start + *size)];
+                let rotate_by = (nonce[i % nonce.len()] % 8) as u32;
 
-        let rotate_by = (nonce[i % nonce.len()] % 8) as u32; // Rotate the byte left by the nonce value
+                let chunk = xor(chunk, &key, config);
 
-        pool.install(|| {
-            let mut chunk = parallel_xor(&chunk, &key);
+                chunk
+                    .into_par_iter()
+                    .map(|b| b.rotate_right(rotate_by))
+                    .collect::<Vec<u8>>()
+            })
+            .collect();
 
-            chunk.par_iter_mut().for_each(|b| {
-                *b = b.rotate_right(rotate_by); // Rotate the byte right by the nonce value
-            });
-
-            original.par_extend(chunk);
-            cursor += size; // Move the cursor to the next chunk
-        })
-    }
-
-    Ok(original)
+        Ok(result)
+    })
 }
