@@ -11,7 +11,7 @@ AtomCrypte is a high-performance, multi-layered, highly-configurable encryption 
 * Designed for **file or data-at-rest encryption**
 * **Not optimized for streaming** or real-time traffic (planned for v0.8.0)
 * **Key, nonce, and salt management** must be handled by user unless `.wrap_all(true)` is enabled
-* **Not backward compatible** with earlier versions (e.g., v0.5.x and below)
+* **Not backward compatible** with earlier versions (e.g., v0.6.x and below)
 * **Experimental**, under active development — **formal audits pending**
 
 ---
