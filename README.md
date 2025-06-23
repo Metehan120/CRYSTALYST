@@ -79,9 +79,9 @@ It supports parallel processing, and modular cryptographic components, enabling 
 - **Zeroized Memory**: Automatic clearing of sensitive data in RAM.
 - **Perfect Distribution**:
   - Exhaustive statistical tests confirms near-theoretical perfection:
-    - Shannon Entropy: `8.0000` (Perfect randomness, Max, Normal: 7.99999+, Min: 7.98)
-    - Bit Balance: `1.0000` (Perfect bit distribution, Max, Normal: 0.99-1, Min: 0.98)
-    - Avalanche Effect: `0.5000` (Ideal avalanche ratio, Max, Normal: 0.5, Min: 0.49)
+    - Shannon Entropy: `8.0000`, which we reach 7.99999+ (Perfect randomness, Max, Normal: 7.99999+, Min: 7.98)
+    - Bit Balance: `1.0000`, which we reach 0.999+ (Perfect bit distribution, Max, Normal: 0.99-1, Min: 0.98)
+    - Avalanche Effect: `0.5000`, which we reach 0.499+ (Ideal avalanche ratio, Max, Normal: 0.5, Min: 0.49)
   - Verified over 10,000 independent test runs.
 - **Memory Hard**: Algorithm is designed to be memory-hard, making it resistant to brute-force attacks even with large amounts of memory.
 - **Zero Memory Leak (Verified in Local Testing)**:
