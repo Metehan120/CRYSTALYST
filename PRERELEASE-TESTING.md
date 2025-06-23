@@ -1,4 +1,4 @@
-# AtomCrypte Pre-Release Testing Checklist (v0.6.0)
+# AtomCrypte Pre-Release Testing Checklist (v0.7.0)
 
 This document outlines all critical testing procedures that must be completed before publishing a new version of AtomCrypte.
 
@@ -14,7 +14,6 @@ This document outlines all critical testing procedures that must be completed be
 | **Avalanche Effect Testing** | ✅ | Target: 0.5000 avalanche ratio (ideal). |
 | **Fuzzing Test** | ✅ | Randomly generate inputs and check for crashes or unexpected behavior. |
 | **Stress Testing (Encrypt/Decrypt Loops)** | ✅ | At least 25 consecutive encryption/decryption cycles. |
-| **Timing Attack Resistance Check** | ✅ | Verify constant-time operations using randomized inputs. |
 | **Side-Channel (Cache) Shifting Validation** | ✅ | Confirm cache instruction randomization between encryptions. |
 | **Salt & Nonce Correctness Check** | ✅ | Ensure proper uniqueness and secure generation every session. |
 | **Multi-threaded Consistency Testing** | ✅ | Run with Rayon on multiple cores; check output consistency. |
