@@ -177,7 +177,7 @@ The most significant update due to the introduction of constant-time configurabl
 - Providing Confusion and Diffusion
 
 ## 15. Corrected Ordering:
-- **RXA First Design**: Provides Rotate + XOR + Add, maybe it seems basic, but its provides VERY HIGH security.
+- **RXA First Design**: Provides Rotate + XOR + Add, maybe it seems basic, but its provides HIGH security.
 
 ## 16. Controlable key derivation:
 - **Enable/Disable via Config**: Allows for custom key derivation functions and variable key lengths

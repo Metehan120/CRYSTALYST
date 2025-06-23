@@ -100,7 +100,7 @@ It supports parallel processing, and modular cryptographic components, enabling 
 - **Galois Field**: MixColumns transformation layer
 - **Dynamic Chunk Shifting**: Adaptive chunk size adjustment based on nonce, password, data length
 - **Block Mix**: Efficiently Mixing data
-- **RXA Layer**: Rotate + XOR + Add in one operation (If it seems basic; no it's provides VERY HIGH security)
+- **RXA Layer**: Rotate + XOR + Add in one operation (If it seems basic; no it's provides HIGH security)
 - **MAC Validation**: Ensures authenticity and tamper-resistance
 - **TPM Operations**: Securely manages cryptographic operations using Trusted Platform Module (TPM)
 
