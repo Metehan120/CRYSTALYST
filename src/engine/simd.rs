@@ -2,12 +2,14 @@ use bytemuck::cast_slice;
 use rayon::prelude::*;
 use std::arch::x86_64::*;
 
-#[cfg(target_arch = "x86_64")]
+use crate::{Config, engine::engine::key_lookup};
+
 #[target_feature(enable = "avx2")]
-pub unsafe fn avx2_xor(data: &[u8], key: &[u8]) -> Vec<u8> {
+pub unsafe fn avx2_xor(data: &[u8], key: &[u8], config: &Config) -> Vec<u8> {
     let mut output = vec![0u8; data.len()];
-    let chunks = data.par_chunks(32);
-    let out_chunks = output.par_chunks_mut(32);
+    let chunks = data.par_chunks_exact(32);
+    let out_chunks = output.par_chunks_exact_mut(32);
+    let remainder = chunks.remainder();
 
     out_chunks.zip(chunks).into_par_iter().enumerate().for_each(
         |(chunk_index, (out_chunk, in_chunk))| {
@@ -31,15 +33,25 @@ pub unsafe fn avx2_xor(data: &[u8], key: &[u8]) -> Vec<u8> {
         },
     );
 
+    if data.len() % 32 != 0 {
+        let start = data.len() - remainder.len();
+        let remainder: Vec<u8> = remainder
+            .par_iter()
+            .enumerate()
+            .map(|(i, b)| b ^ key_lookup(key, i as u8, config))
+            .collect();
+        output[start..].copy_from_slice(&remainder);
+    }
+
     output
 }
 
-#[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-pub fn avx2_add(data: &[u8], key: &[u8]) -> Vec<u8> {
+pub fn avx2_add(data: &[u8], key: &[u8], config: &Config) -> Vec<u8> {
     let mut output = vec![0u8; data.len()];
-    let chunks = data.par_chunks(32);
-    let out_chunks = output.par_chunks_mut(32);
+    let chunks = data.par_chunks_exact(32);
+    let out_chunks = output.par_chunks_exact_mut(32);
+    let remainder = chunks.remainder();
 
     out_chunks.zip(chunks).into_par_iter().enumerate().for_each(
         |(chunk_index, (out_chunk, in_chunk))| {
@@ -63,15 +75,25 @@ pub fn avx2_add(data: &[u8], key: &[u8]) -> Vec<u8> {
         },
     );
 
+    if data.len() % 32 != 0 {
+        let start = data.len() - remainder.len();
+        let remainder: Vec<u8> = remainder
+            .par_iter()
+            .enumerate()
+            .map(|(i, b)| b.wrapping_add(key_lookup(key, i as u8, config)))
+            .collect();
+        output[start..].copy_from_slice(&remainder);
+    }
+
     output
 }
 
-#[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-pub fn avx2_sub(data: &[u8], key: &[u8]) -> Vec<u8> {
+pub fn avx2_sub(data: &[u8], key: &[u8], config: &Config) -> Vec<u8> {
     let mut output = vec![0u8; data.len()];
-    let chunks = data.par_chunks(32);
-    let out_chunks = output.par_chunks_mut(32);
+    let chunks = data.par_chunks_exact(32);
+    let out_chunks = output.par_chunks_exact_mut(32);
+    let remainder = chunks.remainder();
 
     out_chunks.zip(chunks).into_par_iter().enumerate().for_each(
         |(chunk_index, (out_chunk, in_chunk))| {
@@ -94,6 +116,16 @@ pub fn avx2_sub(data: &[u8], key: &[u8]) -> Vec<u8> {
             }
         },
     );
+
+    if data.len() % 32 != 0 {
+        let start = data.len() - remainder.len();
+        let remainder: Vec<u8> = remainder
+            .par_iter()
+            .enumerate()
+            .map(|(i, b)| b.wrapping_sub(key_lookup(key, i as u8, config)))
+            .collect();
+        output[start..].copy_from_slice(&remainder);
+    }
 
     output
 }

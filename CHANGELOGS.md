@@ -1,8 +1,242 @@
+# AtomCrypte v0.7.0 - "Configuration Revolution"
+
+## Overview
+The most significant update due to the introduction of constant-time configurable cryptography and hardware-backed security features.
+- \> Total 1000+ Lines changed/added.
+
+## Major New Features
+### Removed S-Box types.
+
+## Important Feature, Counter Mode (GCM-like but without MAC, algorithm already using HMAC):
+### Counter Mode Benefits
+- **Higher Entropy**: Achieves 7.999+ Shannon entropy in single round, on most cases 7.9999+ entropy
+- **Attack Resistance**: Better protection against pattern-based attacks
+- **Stream Cipher Behavior**: Eliminates block cipher weaknesses
+- **No Performance Cost**: Almost zero overhead when enabled
+
+### Implementation Details
+- **Keystream Generation**: Golden ratio + cross-byte mixing
+- **AES Matrix Integration**: Standard MixColumns on counter keystream
+- **Parallel Processing**: Thread-safe atomic operations
+
+### Security Properties
+- **GCM Compliance**: Counter starts at 1 (NIST standard)
+- **Perfect Balance**: ~50% bit distribution
+- **Excellent Avalanche**: ~50% bit change propagation
+- **High Diffusion**: 99.6%+ byte difference percentage, 7.999+ Shannon entropy, on most cases 7.99999+ entropy
+
+### Entropy Results
+- **50MB Zero Data**: Shannon 7.999996+
+- **Real Data (Tested with 170MB .exe)**: Shannon 7.999999+ (even better!), On my tests, Reached Maximum: 7.9999992+
+- **Avalanche Effect**: ~50% (theoretical ideal)
+- **Bit Balance**: ~50% distribution
+- **Byte Difference**: 99.6%+ unique output
+
+### Usage
+- **Test Suites**: `ctr_layer: false` (pure performance)
+- **Production**: `ctr_layer: true` (enhanced security)
+- **Backwards Compatible**: Existing configs unchanged
+
+### Performance
+- **Throughput**: 40.8 MB/s maintained
+- **Memory**: Minimal additional usage
+- **CPU**: Efficient golden ratio operations
+
+## 2nd Important Feature, Golden Ratio S-Box:
+### Bio-Inspired S-Box Generation
+- **Nature-Derived Mathematics**: Uses the golden ratio (φ = 1.618...) for S-box creation, inspired by natural patterns found in sunflowers, nautilus shells, and Fibonacci sequences
+- **Irrational Number Security**: Each Seed value undergoes golden ratio transformation, creating mathematically irreversible substitutions
+- **Position-Dependent Chaos**: Every byte position gets unique φ multiplication using 32-bit precision
+
+### Implementation Details
+- **Triple Entropy Sources**: Combines password/nonce derivation + golden ratio enhancement + Fisher-Yates shuffling
+- **Perfect Distribution**: Fisher-Yates algorithm ensures uniform S-box permutation
+- **Dynamic Generation**: Every encryption creates a unique S-box based on key and nonce
+
+### Security Properties
+- **Cryptanalysis Resistance**: Linear and differential analysis become impossible due to irrational coefficients
+- **Pattern Breaking**: Golden ratio multiplication destroys all mathematical patterns and relationships
+- **Infinite Variations**: Astronomical number of possible S-boxes (256! × φ^seed_length)
+- **Attack Immunity**: Statistical analysis, algebraic attacks, and brute force become computationally impossible
+
+### 1. **Hardware-Backed Security (TPM 2.0 Integration)**
+- **Complete TPM Nonce Generation Integration on Linux**: Securely integrates TPM 2.0 chips for enhanced security
+- **TPM Nonce Generation**: Hardware-backed entropy using Trusted Platform Module
+- **TPM Hardware Hashing**: Offloads cryptographic hashing to dedicated TPM chip for enhanced security
+- **Intelligent Hash Fallback**: Automatically falls back to software SHA3-512 when TPM algorithms are unsupported
+- **`TpmModule`**: Direct TPM chip integration for maximum security
+- **`NonceType::Tpm`**: Hardware-generated nonces using cryptographic chips
+- **Hardware Key Derivation**: Uses TPM 2.0 for secure key generation and derivation
+- **True Random Number Generation**: Leverages TRNG in TPM 2.0 compliant chips
+- **Enterprise-Grade Security**: Hardware-backed entropy for high-security operations
+
+#### ⚠️ TPM Requirements:
+- Requires TPM 2.0 and enabled firmware support
+- **Administrator/Sudo privileges required** for TPM access
+- Available on modern motherboards with TPM chips
+- **Note**: Some TPM implementations (like AMD fTPM) may have limited algorithm support - automatic fallback ensures compatibility
+
+### 2. **Revolutionary Configuration System**
+- `Profile::Fortress`:
+    - `constant_time_sbox(true)` - Timing attack resistant S-box operations
+    - `constant_time_key_lookup(true)` - Secure key access patterns
+    - `.constant_time_galois_field(true)` - Secure Galois field operations \ EXTREMELY EXPENSIVE (~65.000 CYCLES PER GF TRANSFORMATION)
+    - `10 Rounds` - Number of rounds for cryptographic operations
+
+### 3. **Configurable Constant-Time Operations**
+- `constant_time_sbox(true)` - Timing attack resistant S-box operations
+- `constant_time_key_lookup(true)` - Secure key access patterns
+- Configurable per security profile
+- Side-channel attack resistance
+
+### 4. **Unified Nonce System**
+- **`NonceType` Enum**: Centralized nonce type selection
+  - `NonceType::Classic` - Fast software-generated nonces
+  - `NonceType::Hashed` - Hash-based nonce generation
+  - `NonceType::Machine` - Machine-bound nonces
+  - `NonceType::TPM` - Hardware TPM-generated nonces
+- **`Nonce::generate_nonce()`**: Unified interface for all nonce types
+- **Flexible RNG Support**: Optional custom RNG for software nonces
+
+### 5. TPM generated Salt:
+- **`.tpm_salt()`**: Generate a TPM-generated salt for more secure cryptographic operations.
+- **Randomness Verification**: Ensure entropy sources meet cryptographic requirements
+
+### 6. **Enhanced Hardware Support**
+- **`Hardware` Configuration**: Complete hardware capability control
+  - `set_tmp_enabled()` - Enable/disable TPM features
+  - `set_hardware_nonce()` - Control hardware nonce generation
+  - `set_hardware_hashing()` - Control hardware hashing generation
+  - `set_enable_avx2()` - Enable vector instruction optimization
+- **Builder Pattern**: Fluent hardware configuration interface
+
+### 7. **Complexity Slider API**
+- `Config::default().complexity(0-10)` - Simple security level selection
+- Automatic profile mapping based on complexity level
+- User-friendly security configuration
+
+### 8. **Enhanced Threading Options**
+- `ThreadStrategy::Gaming` - Gaming-optimized threading
+- `ThreadStrategy::BulkOperations` - Server workload optimization
+- `ThreadStrategy::AutoThread` - CPU usage-aware threading
+- `ThreadStrategy::FullThread` - Maximum threading utilization
+- `.stack_size(usize)` - Configure stack size for threads, may needed on high computentional works (Default: 64MB)
+
+### 9. **Advanced Security Primitives**
+- Uses industry-standard `subtle` crate for timing-safe operations
+- Constant-time S-box lookups when security profile demands
+- Memory-safe operations with configurable security levels
+- Protection against timing-based side-channel attacks
+
+## 10. **Complete SIMD XOR, SIMD ADD and SIMD SUB Operations**
+- **Added AVX2 vectorized implementations** for core arithmetic operations
+- **32x parallel processing** with `_mm256_xor_si256`, `_mm256_add_epi8`, `_mm256_sub_epi8` intrinsics
+- **Automatic fallback** to scalar operations on non-AVX2 CPUs
+- **Perfect memory alignment** with 32-byte chunks for optimal SIMD utilization
+- **Cross-platform compatibility** with runtime CPU feature detection
+- **Significant performance boost** on modern x86_64 processors
+- **Zero overhead** remainder handling for non-aligned data sizes
+
+## 11. **Better Ordering**
+- **SIMD call optimization for better performance**
+- **Reduced memory allocations in core encryption pipeline**
+- **Enhanced parallel processing efficiency in dynamic shift operations**
+
+## 12. **Multi Round Galois Field Operations**
+- **Multi Round Galois Field Operations**: Enhanced security.
+- **Can be disabled through configuration BUT ⚠️ do not disable unless you know what you are doing and understand the security implications.**
+
+## 13. **New Golios Field Operations (Only AES Added, Triangle was there)**
+## 13.1.1 Triangle MixColumns (Custom)
+- Chunk size: 3 bytes with remainder handling
+- Operations: Custom polynomial mixing with multi-layer diffusion
+- Advantage: Higher diffusion, superior entropy generation on repeated data
+- \> Optimized for Conway GF operations, perform better on >40kb data
+
+## 13.1.2 AES-inspired MixColumns
+- Chunk size: 4 bytes (standard AES state)
+- Operations: Fixed polynomial matrix multiplication
+- Advantage: Proven security, faster processing
+
+## 13.1.3 Hybrid Mode
+- Process: AES → Triangle (encryption), Triangle⁻¹ → AES⁻¹ (decryption)
+- Advantage: Combined security properties
+- Use case: For research/test purposes
+
+## 13.2 Performance (Ryzen 5 3600):
+| Algorithm  | Processing Time | Throughput |
+|------------|----------------|-----------------|
+| Triangle   | 5.5s          | 25.4 MB/s  |
+| AES        | 3.4s          | 50.9 MB/s  |
+
+## 13.3 Recommendations
+- **⚠️ WARNING:** DO NOT CHANGE unless you understand the security implications
+
+## 14 Shift Rows:
+- **Using similar algorithm to AES**
+- Providing Confusion and Diffusion
+
+## 15. Corrected Ordering:
+- **RXA First Design**: Provides Rotate + XOR + Add, maybe it seems basic, but its provides VERY HIGH security.
+
+## 16. Controlable key derivation:
+- **Enable/Disable via Config**: Allows for custom key derivation functions and variable key lengths
+- **Disabled = Fast Operations**: Optimized for speed and efficiency
+
+## 17. Small Testing unit:
+- **Calculate shanon entropy**: Provides basic metrics to analyze the cryptographic quality of encrypted output. Useful for testing randomness, diffusion, and avalanche effects.
+- **Calculate bit balance**: Checks the balance of 1 and 0 bits.
+- **Calculate avalanche**: Calculates how much the output changes when a small change is made to the input.
+- **Calculate byte difference**: Calculates percentage of bytes that differ between two slices.
+
+## 18. Optimized for Real-Time work by default:
+- Achieves 50MB/s+ on Ryzen 5 3600
+- **Zeroize Disabled By Default**: Zeroize Disabled by Default: Optimized for speed; can be manually enabled or toggled via Secure, Fortress, or Extreme profiles.
+- **AVX2**: 32 Bytes/cycle: Good on big packets, 2x performance improvements most times
+
+## 19. Complete Argon2 implementation:
+- **Argon2id (Recommended)**:
+ - Hybrid of Argon2i and Argon2d.
+ - Resistant to side-channel and GPU attacks.
+ - Best overall balance of speed and security.
+ - Recommended for most use-cases.
+- **Argon2i**:
+ - Prioritizes side-channel resistance.
+ - Memory access is data-independent.
+ - Ideal for password storage or environments vulnerable to timing attacks.
+- **Argon2d**:
+ - Focuses on GPU/hardware attack resistance.
+ - Memory access is data-dependent.
+ - Not safe for password hashing due to side-channel risks.
+ - Useful for key derivation in controlled environments.
+### ⚠️ Warning: Changing Argon2 variant affects key derivation. Make sure it matches on both encryption and decryption.
+
+## Security Enhancements
+
+- **Hardware-Backed Entropy**: TPM integration provides true hardware randomness
+- **Timing Attack Resistance**: Configurable constant-time operations
+- **Side-Channel Protection**: Memory-safe cryptographic primitives
+- **Extra Mix Columns on Rounds**: Enhanced diffusion and confusion
+- **Fixed Remainder on Galois Field Operations**: Ensures consistent results across platforms
+- **Fixed AES Irreducible Polynomial**: Ensures secure and consistent results across platforms
+- **Removed Mix Blocks**: Using RXA instead: Faster and Secure
+# Note: Fortress profile is designed for maximum security and compliance, not speed.
+
+## Performance (Default settings)
+
+### Performance Range (340MB File):
+- Way faster (2-3x) but on different configurations 1.5-2X Slower when compared to default setting
+
+### Hardware Benchmarks:
+- **Ryzen 5 3600:** ~50-100 MB/s
+- **EPYC 9965 series:** 600MB/s+ theoretical throughput
+
+---
+
 # AtomCrypte v0.6.0 - "Stage 2"
 
 ## Overview
-- Biggest update of all time.
-- AtomCrypte now comeswith AVX2 Hardware Support, Fully Rewritten Engine, and Enhanced Security Features.
+- AtomCrypte now comes with AVX2 Hardware Support, Fully Rewritten Engine, and Enhanced Security Features.
 
 ## Removed:
 - Removed GPU Backend Support

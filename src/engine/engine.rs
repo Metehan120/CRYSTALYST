@@ -1,11 +1,13 @@
-use crate::{AlwaysSIMD, Config, Errors, KeyLength, SboxTypes};
+use crate::{Config, Errors, GaloisFieldType, KeyLength, TpmModule};
+use bytemuck::checked::cast_slice;
 use rayon::{ThreadPool, prelude::*};
 use sha3::{Digest, Sha3_512};
 use std::{
     collections::HashMap,
     sync::{OnceLock, RwLock},
 };
-use subtle::ConstantTimeEq;
+use subtle::{ConditionallySelectable, ConstantTimeEq};
+use tss_esapi::structures::MaxBuffer;
 use zeroize::Zeroize;
 
 use super::simd::{avx2_add, avx2_sub, avx2_xor};
@@ -13,54 +15,74 @@ use super::simd::{avx2_add, avx2_sub, avx2_xor};
 static THREAD_POOL: OnceLock<ThreadPool> = OnceLock::new();
 static KEY_CACHE_MAP: OnceLock<RwLock<HashMap<(Vec<u8>, Vec<u8>), Vec<u8>>>> = OnceLock::new();
 
-fn choose_key(nonce: &[u8], key: &[u8], config: &Config) -> Vec<u8> {
+fn choose_key(nonce: &[u8], key: &[u8], config: &Config) -> Result<Vec<u8>, Errors> {
     match config.key_length {
-        KeyLength::Key256 => blake3::hash(&[nonce, key].concat()).as_bytes().to_vec(),
-        KeyLength::Key512 => {
-            let mut hash = Sha3_512::new();
-            hash.update(nonce);
-            hash.update(key);
-            hash.finalize().to_vec()
-        }
+        KeyLength::Key256 => Ok(blake3::hash(&[nonce, key].concat()).as_bytes().to_vec()),
+        KeyLength::Key512 => match config.hardware.hardware_hashing {
+            true => {
+                let manager = TpmModule;
+                let mut context = manager.generate_context(config.hardware)?;
+                let tpm_key = MaxBuffer::try_from([nonce, key].concat())
+                    .map_err(|e| Errors::TpmHashingError(e.to_string()))?;
+                match TpmModule::hash_key(tpm_key, &mut context, config.hardware) {
+                    Ok(hash) => Ok(hash),
+                    Err(_) => {
+                        println!("TPM SHA3-512 NOT SUPPORTED, FALLBACK TO SOFTWARE SHA3-512");
+                        let mut hash = Sha3_512::new();
+                        hash.update(nonce);
+                        hash.update(key);
+                        Ok(hash.finalize().to_vec())
+                    }
+                }
+            }
+            false => {
+                let mut hash = Sha3_512::new();
+                hash.update(nonce);
+                hash.update(key);
+                Ok(hash.finalize().to_vec())
+            }
+        },
     }
 }
 
-fn get_thread_pool(thread_num: usize) -> &'static ThreadPool {
+fn get_thread_pool(thread_num: usize, stack_size: usize) -> &'static ThreadPool {
     THREAD_POOL.get_or_init(|| {
         rayon::ThreadPoolBuilder::new()
             .num_threads(thread_num)
+            .stack_size(stack_size)
             .build()
             .expect("Failed to build thread pool")
     })
 }
 
-fn key_cache(nonce: &[u8], key: &[u8], config: &Config) -> Vec<u8> {
+pub fn key_cache(nonce: &[u8], key: &[u8], config: &Config) -> Result<Vec<u8>, Errors> {
     let cache = KEY_CACHE_MAP.get_or_init(|| RwLock::new(HashMap::new()));
     let key_pair = (nonce.to_vec(), key.to_vec());
 
     {
         let map = cache.read().unwrap();
         if let Some(value) = map.get(&key_pair) {
-            return value.clone();
+            return Ok(value.clone());
         }
     }
 
-    let value = choose_key(nonce, key, config);
+    let value = choose_key(nonce, key, config)?;
 
     let mut map = cache.write().unwrap();
     map.insert(key_pair, value.clone());
 
-    value
+    Ok(value)
 }
 
+#[derive(Debug, Clone, Copy)]
 pub struct GaloisField {
     mul_table: [[u8; 256]; 256],
     inv_table: [u8; 256],
-    irreducible_poly: u8,
+    irreducible_poly: u16,
 }
 
 impl GaloisField {
-    pub fn new(irreducible_poly: u8) -> Self {
+    pub fn new(irreducible_poly: u16) -> Self {
         let mut gf = Self {
             mul_table: [[0; 256]; 256],
             inv_table: [0; 256],
@@ -113,46 +135,34 @@ impl GaloisField {
         self.mul_table[a as usize][b as usize]
     }
 
-    fn inverse(&self, a: u8) -> Option<u8> {
-        if a == 0 {
-            None
-        } else {
-            Some(self.inv_table[a as usize])
+    fn constant_time_fast_multiply(&self, a: u8, b: u8) -> u8 {
+        let mut result = 0u8;
+
+        for i in 0u8..=255u8 {
+            for j in 0u8..=255u8 {
+                let mask = a.ct_eq(&i) & b.ct_eq(&j);
+                result.conditional_assign(&self.mul_table[i as usize][j as usize], mask);
+            }
         }
+
+        result
     }
 }
 
-fn avx2_chunking(data_length: usize) -> usize {
-    match data_length {
-        0..=100 => 64,
-        0..=1000 => 256,
-        0..=10000 => 4096,
-        0..=100000 => 16384,
-        0..=1000000 => 32768,
-        0..=10000000 => 131072,
-        0..=100000000 => 1048576,
-        0..=1000000000 => 16777216,
-        0..=10000000000 => 134217728,
-        0..=100000000000 => 536870912,
-        0..=1000000000000 => 1073741824,
-        0..=10000000000000 => 4294967296,
-        0..=100000000000000 => 8589934592,
-        0..=1000000000000000 => 17179869184,
-        _ => unreachable!(),
-    }
-}
-
-fn parallel_xor(data: &[u8], key: &[u8], pool: &ThreadPool) -> Vec<u8> {
-    let mut output = vec![0u8; data.len()]; // içi dolu olsun
-
+fn parallel_xor(data: &[u8], key: &[u8], pool: &ThreadPool, config: &Config) -> Vec<u8> {
+    let mut output = vec![0u8; 0];
+    output.resize(data.len(), 0u8);
     pool.install(|| {
         let size = data.len() as usize;
         output
             .par_chunks_mut(dynamic_sizes(size) as usize)
             .zip(data.par_chunks(dynamic_sizes(size) as usize))
-            .for_each(|(out_chunk, in_chunk)| {
+            .enumerate()
+            .for_each(|(chunk_index, (out_chunk, in_chunk))| {
+                let chunk_size = dynamic_sizes(size) as usize;
                 for (i, &byte) in in_chunk.iter().enumerate() {
-                    out_chunk[i] = byte ^ key[i % key.len()];
+                    let global_index = (chunk_index * chunk_size + i) as u8;
+                    out_chunk[i] = byte ^ key_lookup(key, global_index, config);
                 }
             });
     });
@@ -160,17 +170,20 @@ fn parallel_xor(data: &[u8], key: &[u8], pool: &ThreadPool) -> Vec<u8> {
     output
 }
 
-fn parallel_add(data: &[u8], key: &[u8], pool: &ThreadPool) -> Vec<u8> {
-    let mut output = vec![0u8; data.len()]; // içi dolu olsun
-
+fn parallel_add(data: &[u8], key: &[u8], pool: &ThreadPool, config: &Config) -> Vec<u8> {
+    let mut output = vec![0u8; 0];
+    output.resize(data.len(), 0u8);
     pool.install(|| {
         let size = data.len() as usize;
         output
             .par_chunks_mut(dynamic_sizes(size) as usize)
             .zip(data.par_chunks(dynamic_sizes(size) as usize))
-            .for_each(|(out_chunk, in_chunk)| {
+            .enumerate()
+            .for_each(|(chunk_index, (out_chunk, in_chunk))| {
+                let chunk_size = dynamic_sizes(size) as usize;
                 for (i, &byte) in in_chunk.iter().enumerate() {
-                    out_chunk[i] = byte.wrapping_add(key[i % key.len()]);
+                    let global_index = (chunk_index * chunk_size + i) as u8;
+                    out_chunk[i] = byte.wrapping_add(key_lookup(key, global_index, config));
                 }
             });
     });
@@ -178,17 +191,20 @@ fn parallel_add(data: &[u8], key: &[u8], pool: &ThreadPool) -> Vec<u8> {
     output
 }
 
-fn parallel_sub(data: &[u8], key: &[u8], pool: &ThreadPool) -> Vec<u8> {
-    let mut output = vec![0u8; data.len()]; // içi dolu olsun
-
+fn parallel_sub(data: &[u8], key: &[u8], pool: &ThreadPool, config: &Config) -> Vec<u8> {
+    let mut output = vec![0u8; 0];
+    output.resize(data.len(), 0u8);
     pool.install(|| {
         let size = data.len() as usize;
         output
             .par_chunks_mut(dynamic_sizes(size) as usize)
             .zip(data.par_chunks(dynamic_sizes(size) as usize))
-            .for_each(|(out_chunk, in_chunk)| {
+            .enumerate()
+            .for_each(|(chunk_index, (out_chunk, in_chunk))| {
+                let chunk_size = dynamic_sizes(size) as usize;
                 for (i, &byte) in in_chunk.iter().enumerate() {
-                    out_chunk[i] = byte.wrapping_sub(key[i % key.len()]);
+                    let global_index = (chunk_index * chunk_size + i) as u8;
+                    out_chunk[i] = byte.wrapping_sub(key_lookup(key, global_index, config));
                 }
             });
     });
@@ -196,134 +212,274 @@ fn parallel_sub(data: &[u8], key: &[u8], pool: &ThreadPool) -> Vec<u8> {
     output
 }
 
-fn xor(data: &[u8], key: &[u8], config: Config) -> Vec<u8> {
-    if is_x86_feature_detected!("avx2") && data.len() % 32 == 0 {
-        unsafe { avx2_xor(data, key) }
+fn xor(data: &mut [u8], key: &[u8], config: &Config) -> Vec<u8> {
+    if is_x86_feature_detected!("avx2") && config.hardware.enable_avx2 {
+        unsafe { avx2_xor(data, key, &config) }
     } else {
         parallel_xor(
             data,
             key,
-            get_thread_pool(config.thread_strategy.get_cpu_count()),
+            get_thread_pool(config.thread_strategy.get_cpu_count(), config.stack_size),
+            &config,
         )
     }
 }
 
-fn add(data: &[u8], key: &[u8], config: Config) -> Vec<u8> {
-    if is_x86_feature_detected!("avx2") && data.len() % 32 == 0 {
-        unsafe { avx2_add(data, key) }
+fn add(data: &mut [u8], key: &[u8], config: &Config) -> Vec<u8> {
+    if is_x86_feature_detected!("avx2") && config.hardware.enable_avx2 {
+        unsafe { avx2_add(data, key, config) }
     } else {
         parallel_add(
             data,
             key,
-            get_thread_pool(config.thread_strategy.get_cpu_count()),
+            get_thread_pool(config.thread_strategy.get_cpu_count(), config.stack_size),
+            &config,
         )
     }
 }
 
-fn sub(data: &[u8], key: &[u8], config: Config) -> Vec<u8> {
-    if is_x86_feature_detected!("avx2") && data.len() % 32 == 0 {
-        unsafe { avx2_sub(data, key) }
+fn sub(data: &mut [u8], key: &[u8], config: &Config) -> Vec<u8> {
+    if is_x86_feature_detected!("avx2") && config.hardware.enable_avx2 {
+        unsafe { avx2_sub(data, key, config) }
     } else {
         parallel_sub(
             data,
             key,
-            get_thread_pool(config.thread_strategy.get_cpu_count()),
+            get_thread_pool(config.thread_strategy.get_cpu_count(), config.stack_size),
+            &config,
         )
     }
+}
+
+pub fn constant_time_key_lookup(key: &[u8], value: u8) -> u8 {
+    let mut result = 0u8;
+
+    for i in 0u8..=255u8 {
+        let mask = value.ct_eq(&i);
+        result.conditional_assign(&key[i as usize % key.len()], mask);
+    }
+
+    result
+}
+
+pub fn key_lookup(key: &[u8], value: u8, config: &Config) -> u8 {
+    match config.constant_time_key_lookup {
+        true => constant_time_key_lookup(key, value),
+        false => key[value as usize % key.len()],
+    }
+}
+
+pub fn generate_counter_keystream(nonce: u64, block_counter: u64, chunk_idx: usize) -> [u8; 3] {
+    let unique_counter = nonce
+        .wrapping_add(block_counter)
+        .wrapping_add(chunk_idx as u64)
+        .wrapping_mul(0x9E3779B97F4A7C15);
+
+    let bytes = unique_counter.to_le_bytes();
+    [
+        bytes[0] ^ bytes[3],
+        bytes[1] ^ bytes[4],
+        bytes[2] ^ bytes[5],
+    ]
 }
 
 pub fn triangle_mix_columns(
     data: &mut [u8],
     gf: &GaloisField,
-    config: Config,
+    nonce: &[u8],
+    config: &Config,
 ) -> Result<Vec<u8>, Errors> {
-    let mut dummy_vec;
-    let data: &mut [u8] = if data.is_empty() {
-        dummy_vec = (0..7642).map(|_| rand::random::<u8>()).collect::<Vec<u8>>();
-        &mut dummy_vec
-    } else {
-        data
-    };
-
-    let mut dummy_data: Vec<u8> = Vec::new();
+    let mut _dummy_data: Vec<u8> = Vec::new();
 
     match config.dummy_data {
         true => {
-            for _i in 0..rand::random_range(0..1048576) {
-                dummy_data.push(rand::random::<u8>());
+            for _i in 0..rand::random_range(0..1024 * 10) {
+                _dummy_data.push(rand::random::<u8>());
             }
         }
         false => {}
     }
 
-    let pool = get_thread_pool(config.thread_strategy.get_cpu_count());
+    if data.is_empty() {
+        return Err(Errors::GaloisFieldError("Empty Data".to_string()));
+    }
+
+    let pool = get_thread_pool(config.thread_strategy.get_cpu_count(), config.stack_size);
 
     pool.install(|| {
-        data.par_chunks_exact_mut(3).for_each(|chunk| {
-            let a = chunk[0];
-            let b = chunk[1];
-            let c = chunk[2];
+        data.par_chunks_exact_mut(3)
+            .enumerate()
+            .for_each(|(idx, chunk)| {
+                let block_counter = ((idx / 1024) as u64) + 1;
+                let mut key_stream = generate_counter_keystream(
+                    (nonce[idx % nonce.len()]) as u64,
+                    block_counter,
+                    idx,
+                );
 
-            chunk[0] = gf.fast_multiply(3, a) ^ gf.fast_multiply(2, b) ^ c;
-            chunk[1] = gf.fast_multiply(4, b) ^ c;
-            chunk[2] = gf.fast_multiply(5, c);
-        })
+                let [a, b, c] = [key_stream[0], key_stream[1], key_stream[2]];
+                match config.constant_time_galois_field {
+                    true => {
+                        key_stream[0] = gf.constant_time_fast_multiply(3, a)
+                            ^ gf.constant_time_fast_multiply(4, b)
+                            ^ c;
+                        key_stream[1] = gf.constant_time_fast_multiply(4, b) ^ c;
+                        key_stream[2] = gf.constant_time_fast_multiply(6, c);
+                    }
+                    false => {
+                        key_stream[0] = gf.fast_multiply(3, a) ^ gf.fast_multiply(4, b) ^ c;
+                        key_stream[1] = gf.fast_multiply(4, b) ^ c;
+                        key_stream[2] = gf.fast_multiply(6, c);
+                    }
+                }
+
+                for (i, byte) in chunk.iter_mut().enumerate() {
+                    *byte ^= key_stream[i];
+                }
+            });
     });
 
     Ok(data.to_vec())
 }
 
-pub fn inverse_triangle_mix_columns(
+pub fn generate_counter_keystream_aes(nonce: u64, block_counter: u64, chunk_idx: usize) -> [u8; 4] {
+    let unique_counter = nonce
+        .wrapping_add(block_counter)
+        .wrapping_add(chunk_idx as u64)
+        .wrapping_mul(0x9E3779B97F4A7C15);
+
+    let bytes = unique_counter.to_le_bytes();
+    [
+        bytes[0] ^ bytes[3],
+        bytes[1] ^ bytes[4],
+        bytes[2] ^ bytes[5],
+        bytes[3] ^ bytes[6],
+    ]
+}
+
+pub fn aes_mix_columns(
     data: &mut [u8],
     gf: &GaloisField,
-    config: Config,
+    config: &Config,
+    nonce: &[u8],
 ) -> Result<Vec<u8>, Errors> {
-    let mut dummy_vec;
-    let data: &mut [u8] = if data.is_empty() {
-        dummy_vec = (0..7642).map(|_| rand::random::<u8>()).collect::<Vec<u8>>();
-        &mut dummy_vec
-    } else {
-        data
-    };
-
-    let mut dummy_data: Vec<u8> = Vec::new();
+    let mut _dummy_data: Vec<u8> = Vec::new();
 
     match config.dummy_data {
         true => {
-            for _i in 0..rand::random_range(0..1048576) {
-                dummy_data.push(rand::random::<u8>());
+            for _i in 0..rand::random_range(0..1024 * 10) {
+                _dummy_data.push(rand::random::<u8>());
             }
         }
         false => {}
     }
 
-    let pool = get_thread_pool(config.thread_strategy.get_cpu_count());
+    if data.is_empty() {
+        return Err(Errors::GaloisFieldError("Empty Data".to_string()));
+    }
+
+    let pool = get_thread_pool(config.thread_strategy.get_cpu_count(), config.stack_size);
 
     pool.install(|| {
-        data.par_chunks_exact_mut(3).for_each(|chunk| {
-            let a = chunk[0];
-            let b = chunk[1];
-            let c = chunk[2];
+        data.par_chunks_exact_mut(4)
+            .enumerate()
+            .for_each(|(idx, chunk)| {
+                let block_counter = ((idx / 1024) as u64) + 1;
 
-            let inv_5 = gf.inverse(5).unwrap_or(1);
-            let c_prime = gf.fast_multiply(inv_5, c);
+                let mut key_stream = generate_counter_keystream_aes(
+                    (nonce[idx % nonce.len()]) as u64,
+                    block_counter,
+                    idx,
+                );
 
-            let inv_4 = gf.inverse(4).unwrap_or(1);
-            let b_prime = gf.fast_multiply(inv_4, b ^ gf.fast_multiply(1, c_prime));
+                let [s0, s1, s2, s3] = [key_stream[0], key_stream[1], key_stream[2], key_stream[3]];
+                match config.constant_time_galois_field {
+                    true => {
+                        key_stream[0] = gf.constant_time_fast_multiply(2, s0)
+                            ^ gf.constant_time_fast_multiply(3, s1)
+                            ^ s2
+                            ^ s3;
+                        key_stream[1] = s0
+                            ^ gf.constant_time_fast_multiply(2, s1)
+                            ^ gf.constant_time_fast_multiply(3, s2)
+                            ^ s3;
+                        key_stream[2] = s0
+                            ^ s1
+                            ^ gf.constant_time_fast_multiply(2, s2)
+                            ^ gf.constant_time_fast_multiply(3, s3);
+                        key_stream[3] = gf.constant_time_fast_multiply(3, s0)
+                            ^ s1
+                            ^ s2
+                            ^ gf.constant_time_fast_multiply(2, s3);
+                    }
+                    false => {
+                        key_stream[0] = gf.fast_multiply(2, s0) ^ gf.fast_multiply(3, s1) ^ s2 ^ s3;
+                        key_stream[1] = s0 ^ gf.fast_multiply(2, s1) ^ gf.fast_multiply(3, s2) ^ s3;
+                        key_stream[2] = s0 ^ s1 ^ gf.fast_multiply(2, s2) ^ gf.fast_multiply(3, s3);
+                        key_stream[3] = gf.fast_multiply(3, s0) ^ s1 ^ s2 ^ gf.fast_multiply(2, s3);
+                    }
+                }
 
-            let inv_3 = gf.inverse(3).unwrap_or(1);
-            let a_prime = gf.fast_multiply(inv_3, a ^ gf.fast_multiply(2, b_prime) ^ c_prime);
-
-            chunk[0] = a_prime;
-            chunk[1] = b_prime;
-            chunk[2] = c_prime;
-        })
+                for (i, byte) in chunk.iter_mut().enumerate() {
+                    *byte ^= key_stream[i];
+                }
+            });
     });
 
     Ok(data.to_vec())
 }
 
-pub fn xor_encrypt(
+pub fn apply_gf(
+    data: &mut [u8],
+    config: &Config,
+    gf: &GaloisField,
+    nonce: &[u8],
+) -> Result<Vec<u8>, Errors> {
+    match config.gf_type {
+        GaloisFieldType::Triangular => triangle_mix_columns(data, gf, nonce, config),
+        GaloisFieldType::AES => aes_mix_columns(data, gf, config, nonce),
+        GaloisFieldType::Hybrid => {
+            let mut mix = aes_mix_columns(data, gf, config, nonce)?;
+            triangle_mix_columns(&mut mix, gf, nonce, config)
+        }
+    }
+}
+
+pub fn inverse_shift_rows(data: &mut [u8], config: &Config) {
+    let pool = get_thread_pool(config.thread_strategy.get_cpu_count(), config.stack_size);
+
+    pool.install(|| {
+        data.par_chunks_exact_mut(16).for_each(|chunk| {
+            chunk.swap(11, 7);
+            chunk.swap(15, 11);
+            chunk.swap(3, 15);
+            chunk.swap(6, 14);
+            chunk.swap(2, 10);
+            chunk.swap(9, 13);
+            chunk.swap(5, 9);
+            chunk.swap(1, 5);
+        });
+    })
+}
+
+pub fn shift_rows(data: &mut [u8], config: &Config) {
+    let pool = get_thread_pool(config.thread_strategy.get_cpu_count(), config.stack_size);
+
+    pool.install(|| {
+        data.par_chunks_exact_mut(16).for_each(|chunk| {
+            chunk.swap(1, 5);
+            chunk.swap(5, 9);
+            chunk.swap(9, 13);
+            chunk.swap(2, 10);
+            chunk.swap(6, 14);
+            chunk.swap(3, 15);
+            chunk.swap(15, 11);
+            chunk.swap(11, 7);
+        });
+    });
+}
+
+pub fn rxa_encrypt(
     nonce: &[u8],
     pwd: &[u8],
     input: &mut [u8],
@@ -337,30 +493,17 @@ pub fn xor_encrypt(
         input
     };
 
-    let key = key_cache(nonce, pwd, &config);
-    let out = match config.always_avx2 {
-        AlwaysSIMD::True => input
-            .par_chunks(avx2_chunking(input.len()))
-            .flat_map(|chunk| {
-                let mut input = xor(&chunk, &key, config);
-                input
-                    .par_iter_mut()
-                    .enumerate()
-                    .for_each(|(i, b)| *b = b.rotate_left(key[i % key.len()] as u32));
-                let out = add(&input, &key, config);
-                out
-            })
-            .collect(),
-        AlwaysSIMD::False => {
-            let mut input = xor(&input, &key, config);
-            input
-                .par_iter_mut()
-                .enumerate()
-                .for_each(|(i, b)| *b = b.rotate_left(key[i % key.len()] as u32));
-            let out = add(&input, &key, config);
-            out
-        }
-    };
+    let pool = get_thread_pool(config.thread_strategy.get_cpu_count(), config.stack_size);
+    let key = key_cache(nonce, pwd, &config)?;
+
+    pool.install(|| {
+        input
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(i, b)| *b = b.rotate_left(key_lookup(&key, i as u8, &config) as u32));
+    });
+    let mut input = xor(input, &key, &config);
+    let out = add(&mut input, &key, &config);
 
     match out.is_empty() {
         true => return Err(Errors::InvalidXor("Empty vector".to_string())),
@@ -368,7 +511,7 @@ pub fn xor_encrypt(
     }
 }
 
-pub fn xor_decrypt(
+pub fn rxa_decrypt(
     nonce: &[u8],
     pwd: &[u8],
     input: &mut [u8],
@@ -382,202 +525,108 @@ pub fn xor_decrypt(
         input
     };
 
-    let key = key_cache(nonce, pwd, &config);
-    let out = match config.always_avx2 {
-        AlwaysSIMD::True => input
-            .par_chunks(avx2_chunking(input.len()))
-            .flat_map(|chunk| {
-                let mut input = sub(&chunk, &key, config);
-                input
-                    .par_iter_mut()
-                    .enumerate()
-                    .for_each(|(i, b)| *b = b.rotate_right(key[i % key.len()] as u32));
-                xor(&input, &key, config)
-            })
-            .collect(),
-        AlwaysSIMD::False => {
-            let mut input = sub(&input, &key, config);
-            input
-                .par_iter_mut()
-                .enumerate()
-                .for_each(|(i, b)| *b = b.rotate_right(key[i % key.len()] as u32));
-            xor(&input, &key, config)
-        }
-    };
+    let pool = get_thread_pool(config.thread_strategy.get_cpu_count(), config.stack_size);
+    let key = key_cache(nonce, pwd, &config)?;
 
-    match out.is_empty() {
-        true => return Err(Errors::InvalidXor("Empty vector".to_string())), // If out vector is empty then returns an Error
-        false => Ok(out),
+    let mut input = sub(input, &key, &config);
+    let mut input = xor(&mut input, &key, &config);
+    pool.install(|| {
+        input
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(i, b)| *b = b.rotate_right(key_lookup(&key, i as u8, &config) as u32));
+    });
+
+    match input.is_empty() {
+        true => return Err(Errors::InvalidXor("Empty vector".to_string())),
+        false => Ok(input),
     }
 }
 
-pub fn mix_blocks(
-    data: &mut [u8],
-    nonce: &[u8],
-    pwd: &[u8],
-    config: Config,
-) -> Result<Vec<u8>, Errors> {
-    let key = key_cache(nonce, pwd, &config);
+fn constant_time_sbox_lookup(sbox: &[u8; 256], input: u8) -> u8 {
+    let mut result = 0u8;
 
-    let mut dummy_vec;
-    let data: &mut [u8] = if data.is_empty() {
-        dummy_vec = (0..7642).map(|_| rand::random::<u8>()).collect::<Vec<u8>>();
-        &mut dummy_vec
-    } else {
-        data
-    };
-
-    let mut dummy_data: Vec<u8> = Vec::new();
-
-    match config.dummy_data {
-        true => {
-            for _i in 0..rand::random_range(0..1048576) {
-                dummy_data.push(rand::random::<u8>());
-            }
-        }
-        false => {}
+    for i in 0u8..=255u8 {
+        let mask = input.ct_eq(&i);
+        result.conditional_assign(&sbox[i as usize], mask);
     }
 
-    let pool = get_thread_pool(config.thread_strategy.get_cpu_count());
-
-    if data.len().ct_eq(&3).unwrap_u8() == 1 {
-        return Ok(data.to_vec()); // If data len <
-    }
-
-    let pool = pool.install(|| {
-        let chunk_size = dynamic_sizes(data.len()) as usize;
-
-        data.par_chunks_mut(chunk_size)
-            .enumerate()
-            .flat_map(|(chunk_index, chunk)| {
-                chunk
-                    .iter()
-                    .enumerate()
-                    .map(|(i, &byte)| {
-                        let global_index = chunk_index * chunk_size + i;
-                        let n = key[global_index % key.len()];
-                        let mut byte = byte;
-                        byte = byte.wrapping_add(n);
-                        byte = byte.rotate_right((n % 8) as u32);
-                        byte ^= n;
-                        byte = byte.wrapping_add(n);
-                        byte
-                    })
-                    .collect::<Vec<u8>>()
-            })
-            .collect::<Vec<u8>>()
-    });
-
-    Ok(pool)
-}
-
-pub fn unmix_blocks(
-    data: &mut [u8],
-    nonce: &[u8],
-    pwd: &[u8],
-    config: Config,
-) -> Result<Vec<u8>, Errors> {
-    let key = key_cache(nonce, pwd, &config);
-
-    let mut dummy_vec;
-    let data: &mut [u8] = if data.is_empty() {
-        dummy_vec = (0..7642).map(|_| rand::random::<u8>()).collect::<Vec<u8>>();
-        &mut dummy_vec
-    } else {
-        data
-    };
-
-    let mut dummy_data: Vec<u8> = Vec::new();
-
-    match config.dummy_data {
-        true => {
-            for _i in 0..rand::random_range(0..1048576) {
-                dummy_data.push(rand::random::<u8>());
-            }
-        }
-        false => {}
-    }
-
-    let pool = get_thread_pool(config.thread_strategy.get_cpu_count());
-
-    if data.len().ct_eq(&3).unwrap_u8() == 1 {
-        return Ok(data.to_vec());
-    }
-
-    let pool = pool.install(|| {
-        let chunk_size = dynamic_sizes(data.len()) as usize;
-
-        data.par_chunks_mut(chunk_size)
-            .enumerate()
-            .flat_map(|(chunk_index, chunk)| {
-                chunk
-                    .iter()
-                    .enumerate()
-                    .map(|(i, &byte)| {
-                        let global_index = chunk_index * chunk_size + i;
-                        let n = key[global_index % key.len()];
-                        let mut byte = byte;
-                        byte = byte.wrapping_sub(n);
-                        byte ^= n;
-                        byte = byte.rotate_left((n % 8) as u32);
-                        byte = byte.wrapping_sub(n);
-                        byte
-                    })
-                    .collect::<Vec<u8>>()
-            })
-            .collect::<Vec<u8>>()
-    });
-
-    Ok(pool)
+    result
 }
 
 fn generate_inv_s_box(s_box: &[u8; 256]) -> [u8; 256] {
     let mut inv_s_box = [0u8; 256];
+
     for (i, &val) in s_box.iter().enumerate() {
-        // Iterate over the s_box
-        inv_s_box[val as usize] = i as u8; // Inverse the s_box
+        inv_s_box[val as usize] = i as u8;
     }
 
     inv_s_box
 }
 
-pub fn generate_dynamic_sbox(nonce: &[u8], key: &[u8], cfg: Config) -> [u8; 256] {
+pub fn generate_dynamic_sbox(nonce: &[u8], key: &[u8], cfg: Config) -> Result<[u8; 256], Errors> {
     let mut sbox: [u8; 256] = [0; 256];
     for i in 0..256 {
         sbox[i] = i as u8;
     }
 
-    let seed_base = key_cache(nonce, key, &cfg);
-    let seed = match cfg.sbox {
-        SboxTypes::PasswordBased => blake3::hash(&[key].concat()).as_bytes().to_vec(),
-        SboxTypes::NonceBased => blake3::hash(&[nonce].concat()).as_bytes().to_vec(),
-        SboxTypes::PasswordAndNonceBased => seed_base.clone(),
-    };
+    let seed_base = key_cache(nonce, key, &cfg)?;
+    let mut seed = cast_slice::<u8, u32>(&seed_base).to_vec();
+    let golden_ratio: u64 = 0x9E3779B97F4A7C15;
+
+    seed.iter_mut().enumerate().for_each(|(i, byte)| {
+        *byte ^= (i as u64 + 1).wrapping_mul(golden_ratio) as u32;
+    });
 
     for i in (1..256).rev() {
         let index = (seed[i % seed.len()] as usize + seed[(i * 7) % seed.len()] as usize) % (i + 1); // Generate a random index
         sbox.swap(i, index); // Swap the values in the sbox
     }
 
-    sbox
+    Ok(sbox)
 }
 
-pub fn in_s_bytes(data: &[u8], nonce: &[u8], pwd: &[u8], cfg: Config) -> Result<Vec<u8>, Errors> {
-    let mut sbox = generate_dynamic_sbox(nonce, pwd, cfg); // Generate the sbox
+pub fn in_s_bytes(
+    data: &mut [u8],
+    nonce: &[u8],
+    pwd: &[u8],
+    cfg: Config,
+) -> Result<Vec<u8>, Errors> {
+    let mut sbox = generate_dynamic_sbox(nonce, pwd, cfg)?; // Generate the sbox
     let inv_sbox = generate_inv_s_box(&sbox); // Generate the inverse sbox
 
     sbox.zeroize();
 
-    let pool = get_thread_pool(cfg.thread_strategy.get_cpu_count());
+    let pool = get_thread_pool(cfg.thread_strategy.get_cpu_count(), cfg.stack_size);
 
-    Ok(pool.install(|| data.par_iter().map(|b| inv_sbox[*b as usize]).collect())) // Inverse the sbox
+    match cfg.constant_time_sbox {
+        true => Ok(pool.install(|| {
+            data.par_iter_mut()
+                .for_each(|b| *b = constant_time_sbox_lookup(&inv_sbox, *b));
+            data.to_vec()
+        })),
+        false => Ok(pool.install(|| {
+            data.par_iter_mut().for_each(|b| *b = inv_sbox[*b as usize]);
+            data.to_vec()
+        })),
+    }
 }
 
-pub fn s_bytes(data: &[u8], nonce: &[u8], pwd: &[u8], cfg: Config) -> Result<Vec<u8>, Errors> {
-    let sbox = generate_dynamic_sbox(nonce, pwd, cfg); // Generate the sbox
-    let pool = get_thread_pool(cfg.thread_strategy.get_cpu_count());
+pub fn s_bytes(data: &mut [u8], nonce: &[u8], pwd: &[u8], cfg: Config) -> Result<Vec<u8>, Errors> {
+    let sbox = generate_dynamic_sbox(nonce, pwd, cfg)?;
+    let pool = get_thread_pool(cfg.thread_strategy.get_cpu_count(), cfg.stack_size);
 
-    Ok(pool.install(|| data.par_iter().map(|b| sbox[*b as usize]).collect())) // Apply the sbox
+    match cfg.constant_time_sbox {
+        true => Ok(pool.install(|| {
+            data.par_iter_mut()
+                .for_each(|b| *b = constant_time_sbox_lookup(&sbox, *b));
+            data.to_vec()
+        })),
+        false => Ok(pool.install(|| {
+            data.par_iter_mut().for_each(|b| *b = sbox[*b as usize]);
+            data.to_vec()
+        })),
+    }
 }
 
 pub fn dynamic_sizes(data_len: usize) -> u32 {
@@ -604,10 +653,15 @@ pub fn dynamic_sizes(data_len: usize) -> u32 {
 }
 
 // TODO: Better chunk generation
-pub fn get_chunk_sizes(data_len: usize, nonce: &[u8], key: &[u8], config: Config) -> Vec<usize> {
+pub fn get_chunk_sizes(
+    data_len: usize,
+    nonce: &[u8],
+    key: &[u8],
+    config: Config,
+) -> Result<Vec<usize>, Errors> {
     let mut sizes = Vec::new();
     let mut pos = 0;
-    let seed = key_cache(nonce, key, &config);
+    let seed = key_cache(nonce, key, &config)?;
 
     let data_size = dynamic_sizes(data_len) as usize;
 
@@ -617,17 +671,17 @@ pub fn get_chunk_sizes(data_len: usize, nonce: &[u8], key: &[u8], config: Config
         pos += size;
     }
 
-    sizes
+    Ok(sizes)
 }
 
 pub fn dynamic_shift(
-    data: &Vec<u8>,
+    data: &mut [u8],
     nonce: &[u8],
     password: &[u8],
     config: Config,
 ) -> Result<Vec<u8>, Errors> {
-    let key = key_cache(nonce, password, &config);
-    let chunk_sizes = get_chunk_sizes(data.len(), nonce, &key, config);
+    let key = key_cache(nonce, password, &config)?;
+    let chunk_sizes = get_chunk_sizes(data.len(), nonce, &key, config)?;
 
     let mut offsets = Vec::with_capacity(chunk_sizes.len());
     let mut cursor = 0;
@@ -640,17 +694,17 @@ pub fn dynamic_shift(
 
     match config.dummy_data {
         true => {
-            for _i in 0..rand::random_range(0..1048576) {
+            for _i in 0..rand::random_range(0..1024 * 10) {
                 dummy_data.push(rand::random::<u8>());
             }
         }
         false => {}
     }
 
-    let pool = get_thread_pool(config.thread_strategy.get_cpu_count());
+    let pool = get_thread_pool(config.thread_strategy.get_cpu_count(), config.stack_size);
 
-    let result: Vec<u8> = pool.install(|| {
-        offsets
+    pool.install(|| {
+        let mut rotated: Vec<u8> = offsets
             .par_iter()
             .enumerate()
             .flat_map(|(i, (start, size))| {
@@ -661,24 +715,26 @@ pub fn dynamic_shift(
                     .par_iter_mut()
                     .for_each(|b| *b = b.rotate_left(rotate_by));
 
-                xor(&chunk, &key, config)
+                chunk
             })
-            .collect()
-    });
+            .collect();
 
-    Ok(result.par_iter().rev().cloned().collect::<Vec<u8>>())
+        let result = xor(&mut rotated, &key, &config);
+
+        Ok(result.par_iter().rev().cloned().collect::<Vec<u8>>())
+    })
 }
 
 pub fn dynamic_unshift(
-    data: &Vec<u8>,
+    data: &mut [u8],
     nonce: &[u8],
     password: &[u8],
     config: Config,
 ) -> Result<Vec<u8>, Errors> {
-    let data = data.par_iter().rev().cloned().collect::<Vec<u8>>();
-    let key = key_cache(nonce, password, &config);
+    let mut data = data.par_iter().rev().cloned().collect::<Vec<u8>>();
+    let key = key_cache(nonce, password, &config)?;
 
-    let chunk_sizes = get_chunk_sizes(data.len(), nonce, &key, config);
+    let chunk_sizes = get_chunk_sizes(data.len(), nonce, &key, config)?;
 
     let mut offsets = Vec::with_capacity(chunk_sizes.len());
     let mut cursor = 0;
@@ -691,32 +747,89 @@ pub fn dynamic_unshift(
 
     match config.dummy_data {
         true => {
-            for _i in 0..rand::random_range(0..1048576) {
+            for _i in 0..rand::random_range(0..1024 * 10) {
                 dummy_data.push(rand::random::<u8>());
             }
         }
         false => {}
     }
 
-    let pool = get_thread_pool(config.thread_strategy.get_cpu_count());
+    let pool = get_thread_pool(config.thread_strategy.get_cpu_count(), config.stack_size);
 
     pool.install(|| {
+        let data = xor(&mut data, &key, &config);
+
         let result: Vec<u8> = offsets
             .par_iter()
             .enumerate()
             .flat_map(|(i, (start, size))| {
-                let chunk = &data[*start..(*start + *size)];
+                let mut chunk = data[*start..(*start + *size)].to_vec();
                 let rotate_by = (nonce[i % nonce.len()] % 8) as u32;
 
-                let chunk = xor(chunk, &key, config);
+                chunk
+                    .par_iter_mut()
+                    .for_each(|b| *b = b.rotate_right(rotate_by));
 
                 chunk
-                    .into_par_iter()
-                    .map(|b| b.rotate_right(rotate_by))
-                    .collect::<Vec<u8>>()
             })
             .collect();
 
         Ok(result)
     })
+}
+
+pub fn generate_keystream_32(nonce: &[u8], block_counter: u64, chunk_idx: usize) -> [u8; 32] {
+    let mut keystream = [0u8; 32];
+
+    for (i, b) in nonce.iter().enumerate() {
+        let unique_counter = (*b as u64)
+            .wrapping_add(block_counter)
+            .wrapping_add(chunk_idx as u64)
+            .wrapping_add(i as u64)
+            .wrapping_mul(0x9E3779B97F4A7C15);
+
+        keystream[i] = unique_counter as u8;
+    }
+
+    keystream
+}
+
+pub fn ctr_encrypt(nonce: &[u8], data: &mut [u8], iv: &[u8]) {
+    let mut current_iv = iv.to_vec();
+
+    for (idx, chunk) in data.chunks_exact_mut(64).enumerate() {
+        let block_counter = ((idx / 256) as u64) + 1;
+        let keystream = generate_keystream_32(nonce, block_counter, idx);
+
+        chunk
+            .iter_mut()
+            .zip(current_iv.iter())
+            .enumerate()
+            .for_each(|(i, (b, iv_byte))| {
+                *b = *b ^ (iv_byte.wrapping_mul(keystream[i % 8]));
+            });
+
+        current_iv = chunk[..iv.len().min(64)].to_vec();
+    }
+}
+
+pub fn ctr_decrypt(nonce: &[u8], data: &mut [u8], iv: &[u8]) {
+    let mut current_iv = iv.to_vec();
+
+    for (idx, chunk) in data.chunks_exact_mut(64).enumerate() {
+        let block_counter = ((idx / 256) as u64) + 1;
+        let keystream = generate_keystream_32(nonce, block_counter, idx);
+
+        let next_iv = chunk[..current_iv.len().min(64)].to_vec();
+
+        chunk
+            .iter_mut()
+            .zip(current_iv.iter())
+            .enumerate()
+            .for_each(|(i, (b, iv_byte))| {
+                *b = *b ^ (iv_byte.wrapping_mul(keystream[i % 8]));
+            });
+
+        current_iv = next_iv;
+    }
 }

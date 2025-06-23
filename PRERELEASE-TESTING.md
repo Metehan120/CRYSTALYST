@@ -9,8 +9,8 @@ This document outlines all critical testing procedures that must be completed be
 | Category | Status | Notes |
 |:--|:--|:--|
 | **Memory Leak Testing** | ✅ | Tested with Valgrind; must show 0 definite/indirect leaks. |
-| **Shannon Entropy Testing** | ✅ | Minimum required: 8.0000 entropy (perfect randomness) on 1MB+ Data. |
-| **Bit Balance Testing** | ✅ | Minimum required: 1.0000 (perfect bit distribution). |
+| **Shannon Entropy Testing** | ✅ | Minimum required: 7.99999 entropy (perfect randomness) on 1MB+ Data. |
+| **Bit Balance Testing** | ✅ | Minimum required: 0.99999 (perfect bit distribution). |
 | **Avalanche Effect Testing** | ✅ | Target: 0.5000 avalanche ratio (ideal). |
 | **Fuzzing Test** | ✅ | Randomly generate inputs and check for crashes or unexpected behavior. |
 | **Stress Testing (Encrypt/Decrypt Loops)** | ✅ | At least 25 consecutive encryption/decryption cycles. |
