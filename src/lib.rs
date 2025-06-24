@@ -290,14 +290,6 @@ pub enum Errors {
     NotBackwardCompatible,
 }
 
-/// Represents different types of sboxes that can be used for encryption and decryption.
-/// # Not recommended for use in production environments.
-#[derive(Debug, Clone, Copy)]
-pub enum SboxTypes {
-    NonceBased,
-    PasswordAndNonceBased,
-}
-
 /// Represents different types of irreducible polynomials that can be used for encryption and decryption.
 #[derive(Debug, Clone, Copy)]
 pub enum IrreduciblePoly {

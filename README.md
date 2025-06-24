@@ -4,6 +4,18 @@
 [![Crates.io](https://img.shields.io/crates/d/atomcrypte)](https://crates.io/crates/atomcrypte)
 [![Crates.io](https://img.shields.io/crates/l/atomcrypte)](https://crates.io/crates/atomcrypte)
 
+## 📊 Statistical Test Results
+
+This implementation has been tested using official and widely recognized randomness testing suites:
+
+- ✅ NIST SP 800-22
+- ✅ Dieharder
+
+📢 **[Click here to view full test results](TEST_SUITES/OVERALL_SCORE.md)**
+All tests passed with strong or perfect ratings. A few tests flagged as “weak” due to extremely uniform results, which is acceptable.
+
+\> Note: Tests were conducted on encrypted output of a 50MB all-zero input using AtomCrypte with Argon2d. See `output.bin` for reproducibility.
+
 - OFFICIAL SITE & DOCUMENTATION: [SITE](https://atomcrypte.zaferoglu.me/main) / Currently not available
 - A high-performance, multi-layered encryption library designed for flexibility, security, and speed.
 - Secured with TPM operations and cryptographic algorithms.
