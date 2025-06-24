@@ -75,7 +75,6 @@
 
 3. **DIEHARDER Validation:** Zero failures across 114 tests
    - Only 2 statistical anomalies (WEAK)
-   - Better performance than /dev/urandom
 
 4. **Worst-Case Performance:** All tests performed on all-zero plaintext
    - Most challenging input for encryption algorithms
