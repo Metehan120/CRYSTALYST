@@ -1,7 +1,7 @@
 # CRYSTALYST – High-Performance Encryption
-[![Crates.io](https://img.shields.io/crates/v/crystalyst)](https://crates.io/crates/crystalyst)
-[![Downloads](https://img.shields.io/crates/d/crystalyst)](https://crates.io/crates/crystalyst)
-[![License](https://img.shields.io/crates/l/crystalyst)](LICENSE)
+[![Crates.io](https://img.shields.io/crates/v/crystalyst-rs)](https://crates.io/crates/crystalyst-rs)
+[![Downloads](https://img.shields.io/crates/d/crystalyst-rs)](https://crates.io/crates/crystalyst-rs)
+[![License](https://img.shields.io/crates/l/crystalyst-rs)](LICENSE)
 
 > **Note:** CRYSTALYST was formerly known as **AtomCrypte**.
 
