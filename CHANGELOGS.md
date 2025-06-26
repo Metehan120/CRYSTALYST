@@ -1,4 +1,52 @@
-# AtomCrypte v0.7.0 - "Configuration Revolution"
+# CRYSTALYST v0.8.0 - "When Things Get Real"
+## Overview
+
+Major leap on CRYSTALYST history, introducing Real Key512 support, full SHA-3 support, and more.
+
+## New Features
+### 1. Real Key512 Support
+- **Full Key Expansion**: Supports 512-bit keys for enhanced security.
+- **Key Derivation**: Utilizes only Argon2 for secure key derivation.
+- **Removed BLAKE3 Key Derivation Support**: Key never shrunk to 32bytes, but rather expanded to Key512.
+
+### 2. Enhanced HMAC Support:
+- **Full MAC Restructure**: The HMAC calculation now includes the version, cryptographic metadata, and SHA3-512 hashed ciphertext to ensure robust integrity.
+- **Extended Metadata Layer**: Appends [0xAC, 0x07, 0x13, 0x00] control bytes to strengthen tamper detection.
+- **Encrypt-then-MAC**: Implements a secure HMAC scheme after encryption to ensure both confidentiality and message integrity.
+- **Improved Digest Composition**: Introduces layered hash input (plaintext, ciphertext, nonce, metadata and version) for enhanced cryptographic binding.
+
+### 3. Full SHA3 Integration
+- **Blake3 Replaced**: Transitioned from Blake3 to SHA3-256 and SHA3-512 for cryptographic consistency and post-quantum readiness.
+- **Unified Digest Layer**: All MAC, hashing, and S-box generation now rely solely on SHA3 algorithms.
+
+### 4. Post-Quantum Key Exchange Support (Kyber Integration)
+- Integrated NIST-standard Kyber512 algorithm as an optional key exchange mechanism.
+- New KyberModule API: Enables secure, passwordless shared secret generation between two parties.
+- Provides built-in support for:
+  - client_init → initializes ephemeral shared key generation
+  - server_receive → receives and finalizes the shared secret
+  - shared_secret() → exports derived key for use in CRYSTALYST
+- Drop-in compatible with CrystalystBuilder::password(...), allowing seamless encryption using post-quantum shared keys.
+- Resistant to both classical and quantum key recovery attacks.
+
+### 5. Eliminated internal key caching from RXA:
+- Eliminated internal key caching in the RXA encryption/decryption layer to reduce memory footprint and avoid unnecessary allocations.
+- Enhanced security by preventing sensitive key material from being stored in long-lived memory structures (e.g. HashMap with RwLock), reducing the attack surface for side-channel or memory scraping attacks.
+
+### 6. More secure S-BOX generation:
+- Replaced the previous cast_slice::<u8, u32> usage with a safe and explicit mapping using .map(|b| *b as u32) to prevent potential alignment issues and ensure full seed length preservation.
+
+### 7. Secure Key Cache management:
+- Implemented a secure key cache management system to prevent sensitive key material from being stored in long-lived memory structures, reducing the attack surface for side-channel or memory scraping attacks.
+- Keys are stored in SecretBox<[u8]>, ensuring they’re automatically zeroed out when dropped.
+
+### 8. Better Chunk Generation on Dynamic Shift:
+- Harmonized with Golden Ratio and key_cache using the formula: chunk_size = dynamic_size + seed[pos] ^ (pos * GOLDEN_RATIO)
+- Implemented a more efficient chunk generation algorithm that dynamically adjusts the shift based on the input data size, ensuring optimal performance and security.
+- This ensures non-uniform chunk sizes across data segments, making pattern analysis and ciphertext structure inference significantly harder.
+- Golden Ratio multiplier (0x9E3779B97F4A7C15) introduces high-entropy, non-repeating patterns in chunk boundaries.
+
+# CRYSTALYST v0.7.0 - "Configuration Revolution"
 
 ## Overview
 The most significant update due to the introduction of constant-time configurable cryptography and hardware-backed security features.
@@ -233,10 +281,10 @@ The most significant update due to the introduction of constant-time configurabl
 
 ---
 
-# AtomCrypte v0.6.0 - "Stage 2"
+# CRYSTALYST v0.6.0 - "Stage 2"
 
 ## Overview
-- AtomCrypte now comes with AVX2 Hardware Support, Fully Rewritten Engine, and Enhanced Security Features.
+- CRYSTALYST now comes with AVX2 Hardware Support, Fully Rewritten Engine, and Enhanced Security Features.
 
 ## Removed:
 - Removed GPU Backend Support
@@ -282,7 +330,7 @@ The most significant update due to the introduction of constant-time configurabl
 - Wrapping option (.wrap_all(true))
 
 ### 8.2. Builder
-- Same as before. (AtomCrypteBuilder::new())
+- Same as before. (CrystalystBuilder::new())
 - Benchmark and Wrap All moved to Utils
 
 ## Fixes and Enhancements
@@ -316,10 +364,10 @@ Performance varies based on thread count and data size.
 
 ---
 
-# AtomCrypte v0.5.0 – "Stage 1"
+# CRYSTALYST v0.5.0 – "Stage 1"
 
 ## Overview
-> The 0.5.0 update marks the **largest internal refactor and performance leap until 0.5.0** in AtomCrypte's history. With a redesigned encryption engine, this release delivers unmatched parallel performance, cleaner abstractions, and even better resistance against side-channel analysis.
+> The 0.5.0 update marks the **largest internal refactor and performance leap until 0.5.0** in CRYSTALYST's history. With a redesigned encryption engine, this release delivers unmatched parallel performance, cleaner abstractions, and even better resistance against side-channel analysis.
 
 ---
 
@@ -386,18 +434,16 @@ Performance varies based on thread count and data size.
 - **AVX2** Support: SIMD acceleration.
 - **ARM NEON** Support: SIMD acceleration.
 
-### v0.8.0 → Networked Mode / Remote Secret Key Injection
-
 ---
 
-# AtomCrypte v0.4.1 – “Dummy Data”
+# CRYSTALYST v0.4.1 – “Dummy Data”
 
 ## New Features
 
 ### 1. Dummy Data Generator
 - **Timing‐Attack Shield:**
-  - If someone feeds you an empty input, AtomCrypte now auto‐generates a random “junk” payload (1 BYTE – 8 KB by default).
-  - General‐purpose decoy bytes: after any encryption call, AtomCrypte can sprinkle in up to **1 MB** of extra random data.
+  - If someone feeds you an empty input, CRYSTALYST now auto‐generates a random “junk” payload (1 BYTE – 8 KB by default).
+  - General‐purpose decoy bytes: after any encryption call, CRYSTALYST can sprinkle in up to **1 MB** of extra random data.
 - **Analysis‐Attack Confusion:**
   - Any attempt to profile your ciphertext size or pattern gets thrown off by these decoy bytes.
 
@@ -409,7 +455,7 @@ Performance varies based on thread count and data size.
   - No significant performance degradation observed — your data stays safe without slowing you down.
 
 
-# AtomCrypte v0.4.0 - "Steps Toward"
+# CRYSTALYST v0.4.0 - "Steps Toward"
 ## New Features
 
 ### 1. 512-bit Key Support
@@ -445,7 +491,7 @@ Performance varies based on thread count and data size.
 
 ---
 
-# AtomCrypte v0.3.0 - "Secure Evolution"
+# CRYSTALYST v0.3.0 - "Secure Evolution"
 ## New Features
 
 ### 1. Salt Support

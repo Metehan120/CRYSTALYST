@@ -1,7 +1,8 @@
 use crate::{Config, Errors, GaloisFieldType, KeyLength, TpmModule};
-use bytemuck::checked::cast_slice;
+use rand::Rng;
 use rayon::{ThreadPool, prelude::*};
-use sha3::{Digest, Sha3_512};
+use secrecy::{ExposeSecret, SecretBox};
+use sha3::{Digest, Sha3_256, Sha3_512};
 use std::{
     collections::HashMap,
     sync::{OnceLock, RwLock},
@@ -12,12 +13,19 @@ use zeroize::Zeroize;
 
 use super::simd::{avx2_add, avx2_sub, avx2_xor};
 
+type SecretKey = SecretBox<[u8]>;
+
 static THREAD_POOL: OnceLock<ThreadPool> = OnceLock::new();
-static KEY_CACHE_MAP: OnceLock<RwLock<HashMap<(Vec<u8>, Vec<u8>), Vec<u8>>>> = OnceLock::new();
+static KEY_CACHE_MAP: OnceLock<RwLock<HashMap<Vec<u8>, SecretKey>>> = OnceLock::new();
 
 fn choose_key(nonce: &[u8], key: &[u8], config: &Config) -> Result<Vec<u8>, Errors> {
     match config.key_length {
-        KeyLength::Key256 => Ok(blake3::hash(&[nonce, key].concat()).as_bytes().to_vec()),
+        KeyLength::Key256 => {
+            let mut hash = Sha3_256::new();
+            hash.update(nonce);
+            hash.update(key);
+            Ok(hash.finalize().to_vec())
+        }
         KeyLength::Key512 => match config.hardware.hardware_hashing {
             true => {
                 let manager = TpmModule;
@@ -55,21 +63,30 @@ fn get_thread_pool(thread_num: usize, stack_size: usize) -> &'static ThreadPool 
     })
 }
 
-pub fn key_cache(nonce: &[u8], key: &[u8], config: &Config) -> Result<Vec<u8>, Errors> {
+pub fn key_cache(nonce: &mut [u8], key: &[u8], config: &Config) -> Result<Vec<u8>, Errors> {
     let cache = KEY_CACHE_MAP.get_or_init(|| RwLock::new(HashMap::new()));
-    let key_pair = (nonce.to_vec(), key.to_vec());
+    let key_pair = nonce
+        .iter()
+        .enumerate()
+        .map(|(i, b)| b.wrapping_add(key[i % key.len()]))
+        .collect::<Vec<u8>>();
 
     {
-        let map = cache.read().unwrap();
+        let map = cache
+            .read()
+            .map_err(|_| Errors::BuildFailed("Cannot read cache data".to_string()))?;
         if let Some(value) = map.get(&key_pair) {
-            return Ok(value.clone());
+            let value = value.expose_secret();
+            return Ok(value.to_vec());
         }
     }
 
     let value = choose_key(nonce, key, config)?;
 
-    let mut map = cache.write().unwrap();
-    map.insert(key_pair, value.clone());
+    let mut map = cache
+        .write()
+        .map_err(|_| Errors::BuildFailed("Cannot write cache data".to_string()))?;
+    map.insert(key_pair, SecretBox::new(value.clone().into_boxed_slice()));
 
     Ok(value)
 }
@@ -293,7 +310,7 @@ pub fn triangle_mix_columns(
 
     match config.dummy_data {
         true => {
-            for _i in 0..rand::random_range(0..1024 * 10) {
+            for _i in 0..rand::thread_rng().gen_range(0..=1024 * 10) {
                 _dummy_data.push(rand::random::<u8>());
             }
         }
@@ -310,7 +327,7 @@ pub fn triangle_mix_columns(
         data.par_chunks_exact_mut(3)
             .enumerate()
             .for_each(|(idx, chunk)| {
-                let block_counter = ((idx / 1024) as u64) + 1;
+                let block_counter = ((idx / 512) as u64) + 1;
                 let mut key_stream = generate_counter_keystream(
                     (nonce[idx % nonce.len()]) as u64,
                     block_counter,
@@ -367,7 +384,7 @@ pub fn aes_mix_columns(
 
     match config.dummy_data {
         true => {
-            for _i in 0..rand::random_range(0..1024 * 10) {
+            for _i in 0..rand::thread_rng().gen_range(0..=1024 * 10) {
                 _dummy_data.push(rand::random::<u8>());
             }
         }
@@ -384,7 +401,7 @@ pub fn aes_mix_columns(
         data.par_chunks_exact_mut(4)
             .enumerate()
             .for_each(|(idx, chunk)| {
-                let block_counter = ((idx / 1024) as u64) + 1;
+                let block_counter = ((idx / 512) as u64) + 1;
 
                 let mut key_stream = generate_counter_keystream_aes(
                     (nonce[idx % nonce.len()]) as u64,
@@ -479,12 +496,7 @@ pub fn shift_rows(data: &mut [u8], config: &Config) {
     });
 }
 
-pub fn rxa_encrypt(
-    nonce: &[u8],
-    pwd: &[u8],
-    input: &mut [u8],
-    config: Config,
-) -> Result<Vec<u8>, Errors> {
+pub fn rxa_encrypt(pwd: &[u8], input: &mut [u8], config: Config) -> Result<Vec<u8>, Errors> {
     let mut dummy_vec;
     let input: &mut [u8] = if input.is_empty() {
         dummy_vec = (0..7642).map(|_| rand::random::<u8>()).collect::<Vec<u8>>();
@@ -494,16 +506,15 @@ pub fn rxa_encrypt(
     };
 
     let pool = get_thread_pool(config.thread_strategy.get_cpu_count(), config.stack_size);
-    let key = key_cache(nonce, pwd, &config)?;
 
     pool.install(|| {
         input
             .par_iter_mut()
             .enumerate()
-            .for_each(|(i, b)| *b = b.rotate_left(key_lookup(&key, i as u8, &config) as u32));
+            .for_each(|(i, b)| *b = b.rotate_left(key_lookup(&pwd, i as u8, &config) as u32));
     });
-    let mut input = xor(input, &key, &config);
-    let out = add(&mut input, &key, &config);
+    let mut input = xor(input, &pwd, &config);
+    let out = add(&mut input, &pwd, &config);
 
     match out.is_empty() {
         true => return Err(Errors::InvalidXor("Empty vector".to_string())),
@@ -511,12 +522,7 @@ pub fn rxa_encrypt(
     }
 }
 
-pub fn rxa_decrypt(
-    nonce: &[u8],
-    pwd: &[u8],
-    input: &mut [u8],
-    config: Config,
-) -> Result<Vec<u8>, Errors> {
+pub fn rxa_decrypt(pwd: &[u8], input: &mut [u8], config: Config) -> Result<Vec<u8>, Errors> {
     let mut dummy_vec;
     let input: &mut [u8] = if input.is_empty() {
         dummy_vec = (0..7642).map(|_| rand::random::<u8>()).collect::<Vec<u8>>();
@@ -526,15 +532,14 @@ pub fn rxa_decrypt(
     };
 
     let pool = get_thread_pool(config.thread_strategy.get_cpu_count(), config.stack_size);
-    let key = key_cache(nonce, pwd, &config)?;
 
-    let mut input = sub(input, &key, &config);
-    let mut input = xor(&mut input, &key, &config);
+    let mut input = sub(input, &pwd, &config);
+    let mut input = xor(&mut input, &pwd, &config);
     pool.install(|| {
         input
             .par_iter_mut()
             .enumerate()
-            .for_each(|(i, b)| *b = b.rotate_right(key_lookup(&key, i as u8, &config) as u32));
+            .for_each(|(i, b)| *b = b.rotate_right(key_lookup(&pwd, i as u8, &config) as u32));
     });
 
     match input.is_empty() {
@@ -570,12 +575,12 @@ pub fn generate_dynamic_sbox(nonce: &[u8], key: &[u8], cfg: Config) -> Result<[u
         sbox[i] = i as u8;
     }
 
-    let seed_base = key_cache(nonce, key, &cfg)?;
-    let mut seed = cast_slice::<u8, u32>(&seed_base).to_vec();
-    let golden_ratio: u64 = 0x9E3779B97F4A7C15;
+    let mut nonce = nonce.to_vec();
+    let seed_base = key_cache(&mut nonce, key, &cfg)?;
+    let mut seed = seed_base.iter().map(|b| *b as u32).collect::<Vec<u32>>();
 
     seed.iter_mut().enumerate().for_each(|(i, byte)| {
-        *byte ^= (i as u64 + 1).wrapping_mul(golden_ratio) as u32;
+        *byte ^= (i as u64 + 1).wrapping_mul(0x9E3779B97F4A7C15) as u32;
     });
 
     for i in (1..256).rev() {
@@ -652,26 +657,29 @@ pub fn dynamic_sizes(data_len: usize) -> u32 {
     }
 }
 
-// TODO: Better chunk generation
 pub fn get_chunk_sizes(
     data_len: usize,
     nonce: &[u8],
     key: &[u8],
     config: Config,
 ) -> Result<Vec<usize>, Errors> {
-    let mut sizes = Vec::new();
+    let mut sizes_table = Vec::new();
     let mut pos = 0;
-    let seed = key_cache(nonce, key, &config)?;
+
+    let mut nonce = nonce.to_vec();
+    let seed = key_cache(&mut nonce, key, &config)?;
 
     let data_size = dynamic_sizes(data_len) as usize;
 
     while pos < data_len {
-        let size = data_size + (seed[pos % seed.len()] as usize % 8); // Generate a random size for the chunk via Pos % Seed Lenght
-        sizes.push(size.min(data_len - pos)); // Prevents code from unexpected errors and pushing data to sizes Vector
+        let size = data_size + (seed[pos % seed.len()] as usize % 16)
+            ^ (pos.wrapping_mul(0x9E3779B97F4A7C15));
+        sizes_table.push(size.min(data_len - pos));
+
         pos += size;
     }
 
-    Ok(sizes)
+    Ok(sizes_table)
 }
 
 pub fn dynamic_shift(
@@ -680,8 +688,9 @@ pub fn dynamic_shift(
     password: &[u8],
     config: Config,
 ) -> Result<Vec<u8>, Errors> {
-    let key = key_cache(nonce, password, &config)?;
-    let chunk_sizes = get_chunk_sizes(data.len(), nonce, &key, config)?;
+    let mut nonce = nonce.to_vec();
+    let key = key_cache(&mut nonce, password, &config)?;
+    let chunk_sizes = get_chunk_sizes(data.len(), &nonce, &key, config)?;
 
     let mut offsets = Vec::with_capacity(chunk_sizes.len());
     let mut cursor = 0;
@@ -694,7 +703,7 @@ pub fn dynamic_shift(
 
     match config.dummy_data {
         true => {
-            for _i in 0..rand::random_range(0..1024 * 10) {
+            for _i in 0..rand::thread_rng().gen_range(0..=1024 * 10) {
                 dummy_data.push(rand::random::<u8>());
             }
         }
@@ -732,9 +741,10 @@ pub fn dynamic_unshift(
     config: Config,
 ) -> Result<Vec<u8>, Errors> {
     let mut data = data.par_iter().rev().cloned().collect::<Vec<u8>>();
-    let key = key_cache(nonce, password, &config)?;
+    let mut nonce = nonce.to_vec();
+    let key = key_cache(&mut nonce, password, &config)?;
 
-    let chunk_sizes = get_chunk_sizes(data.len(), nonce, &key, config)?;
+    let chunk_sizes = get_chunk_sizes(data.len(), &nonce, &key, config)?;
 
     let mut offsets = Vec::with_capacity(chunk_sizes.len());
     let mut cursor = 0;
@@ -747,7 +757,7 @@ pub fn dynamic_unshift(
 
     match config.dummy_data {
         true => {
-            for _i in 0..rand::random_range(0..1024 * 10) {
+            for _i in 0..rand::thread_rng().gen_range(0..=1024 * 10) {
                 dummy_data.push(rand::random::<u8>());
             }
         }
@@ -798,7 +808,7 @@ pub fn ctr_encrypt(nonce: &[u8], data: &mut [u8], iv: &[u8]) {
     let mut current_iv = iv.to_vec();
 
     for (idx, chunk) in data.chunks_exact_mut(64).enumerate() {
-        let block_counter = ((idx / 256) as u64) + 1;
+        let block_counter = ((idx / 64) as u64) + 1;
         let keystream = generate_keystream_32(nonce, block_counter, idx);
 
         chunk
@@ -817,7 +827,7 @@ pub fn ctr_decrypt(nonce: &[u8], data: &mut [u8], iv: &[u8]) {
     let mut current_iv = iv.to_vec();
 
     for (idx, chunk) in data.chunks_exact_mut(64).enumerate() {
-        let block_counter = ((idx / 256) as u64) + 1;
+        let block_counter = ((idx / 64) as u64) + 1;
         let keystream = generate_keystream_32(nonce, block_counter, idx);
 
         let next_iv = chunk[..current_iv.len().min(64)].to_vec();

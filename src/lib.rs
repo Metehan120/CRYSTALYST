@@ -1,25 +1,138 @@
-/*! # AtomCrypte
-- A high-performance, multi-layered encryption library designed for flexibility, security, and speed.)
+/*! # CRYSTALYST – High-Performance Encryption
+[![Crates.io](https://img.shields.io/crates/v/atomcrypte)](https://crates.io/crates/atomcrypte)
+[![Downloads](https://img.shields.io/crates/d/atomcrypte)](https://crates.io/crates/atomcrypte)
+[![License](https://img.shields.io/crates/l/atomcrypte)](LICENSE)
+
+
+> Latest Version: 0.8.0 - "When Things Get Real", [Changelogs](CHANGELOGS.md)
+
+> **Where does the name come from?**
+> Inspired by the fusion of **CRYSTAL** (clarity, structure) and **CATALYST** (accelerator). Thus: **CRYSTAL** + catal**YST** = **CRYSTALYST**.
+
+- [Pre-Release Testing](PRERELEASE-TESTING.md)
+- [Known Issues](KNOWN-ISSUES.md)
+- [Threat Model](THREAT-MODEL.md)
 
 ---
 
-## 🚧 Disclaimer
-- This project is currently experimental and is not recommended for production environments.
-- While it offers strong multi-layered security, including quantum-resilient techniques, it has not undergone formal third-party audits.
-- It has been developed for academic research, cryptographic experimentation, and educational purposes.
-- **Use at your own discretion, and apply additional caution in critical systems.**
+## ⚠️ Disclaimer
+
+- **This project is experimental and not production-ready.**
+- While CRYSTALYST offers strong multi-layered cryptography with post-quantum primitives, it has **not been formally audited**.
+- Use at your own risk — especially in high-security or production environments.
+
+## NOT BACKWARD COMPATIBLE WITH AtomCrypte
 
 ---
 
-## Overview
+## Statistical Test Results
 
-AtomCrypte is a robust encryption library that combines multiple cryptographic techniques to provide state-of-the-art security with configurable parameters.
-It supports parallel processing, GPU acceleration, and modular cryptographic components, enabling both performance and advanced customization.
+This implementation has been tested using official and widely recognized randomness testing suites:
+
+- ✅ NIST SP 800-22
+- ✅ Dieharder
+
+**[Click here to view full test results](TEST_SUITES/OVERALL_SCORE.md)**
+All tests passed with strong or perfect ratings. A few tests flagged as “weak” due to extremely uniform results, which is acceptable.
+
+\> Note: Tests were conducted on encrypted output of a 50MB all-zero input using CRYSTALYST with Argon2d. See `output.bin` for reproducibility.
+
+---
+
+## Features at a Glance
+
+- Offers strong multi-layered cryptography and post-quantum primitives.
+- No formal third-party audits have been conducted.
+- Built for **research**, **experimentation**, and **educational use**.
+- TPM integration provides secure Nonce + Salt generation and secure hardware-backed hashing.
+- **Zeroize is disabled by default** for performance — enable via `Secure`, `Fortress`, or `Extreme` profiles for memory hygiene.
+
+| Feature                      | Description                                                                 |
+|-----------------------------|-----------------------------------------------------------------------------|
+| Key512 Support           | True 512-bit key support, no shrink hacks                                   |
+| SHA3 Hashing             | Unified SHA3-256/SHA3-512 across MAC, S-Box, Hashing                        |
+| Dynamic S-Box Engine     | Golden ratio powered, per-encryption randomness                            |
+| Secure Key Cache         | SecretBox-backed, auto-zeroing cache                                        |
+| Counter Mode Encryption  | GCM-like stream cipher for high entropy                                     |
+| TPM Integration          | Hardware-backed hashing, nonce, and salt generation                         |
+| Entropy Analyzer         | Avalanche, balance, and Shannon tests built-in                             |
+| Hybrid MixColumns        | AES + Triangle Galois Field transforms                                      |
+| Configurable Complexity  | Profiles: `Fast`, `Secure`, `Extreme`, etc. or build your own                   |
+| Constant-Time Ops        | Constant-time key lookup, S-Box ops, and MAC comparisons                    |
+| SIMD Acceleration        | Full AVX2-backed XOR, ADD, SUB                                         |
+
+---
+
+## Dynamic S-Box generation:
+- \> CRYSTALYST introduces a novel approach to Dynamic S-Box generation, ensuring each encryption operation uses a unique, unpredictable S-Box. This dynamic generation enhances security by preventing precomputed attacks and reducing the effectiveness of statistical analysis.
+### How much entropy does it provide?
+- \> It's providing 8.0000 shanon entropy, which is the maximum possible entropy, because always it has 256 bytes (0..255).
+### How unique is it?
+- \>%99.99 (Almost never generates same S-Box), its not perfect because of the nature of the algorithm, and never can generate fully unique S-Box, but it's close to it.
+### How is that even possible on real time?:
+- 1. **Key X Nonce combination**: Combining Key and Nonce using a secure hash function (If computed before using precomputed values), ensuring aperiodic distribution and unpredictability.
+- 2. **Golden Ratio**: Irrational number properties, ensuring aperiodic distribution and unpredictability.
+- 3. **Fisher-Yates Shuffle**: Randomizes the order of elements in the S-Box, ensuring each permutation is unique and unpredictable.
+- 4. **Pregenerate S-Box, after swapping**: Swapping Pregenerated S-Box, this is lightweight and efficient.
+- 5. **Cache Optimization**: Getting pre-generated Key X Nonce combination from cache, no computation power needed.
+### Test Results:
+- Tested through static key, different nonce values
+- Generation **repeated over 10 million times**, **no duplicates found**
+
+\> If same key (if you used Salt, same Salt needed as well) + nonce it will generate same S-Box, it's how it should be.
+
+---
+
+## Why CRYSTALYST?
+
+- Combines modern cryptographic primitives like SHA3, Argon2, and AVX2 for next-gen security.
+- Fully configurable — from chunk size to Galois field type.
+- Built-in statistical analysis tools for dev-time confidence.
+- Sane defaults, crazy flexibility.
+
+---
+
+## 📦 Installation
+
+```bash
+cargo add crystalyst
+```
+
+## Quick Example
+
+```rust
+use crystalyst::{CrystalystBuilder, Config, Nonce, Utils, NonceType};
+
+let nonce = Nonce::generate_nonce(None, NonceType::Classic);
+let utils = Utils::new().wrap_all(true);
+let config = Config::default();
+
+let encrypted = CrystalystBuilder::new()
+    .data(b"Hello, world!")
+    .password("super_secret_password")
+    .nonce(nonce)
+    .config(config)
+    .encrypt()
+    .expect("encryption failed");
+
+let decrypted = CrystalystBuilder::new()
+    .data(&encrypted)
+    .password("super_secret_password")
+    .config(config)
+    .decrypt()
+    .expect("decryption failed");
+
+assert_eq!(decrypted, b"Hello, world!");
+```
 
 ---
 
 ## Key Features
-
+- **Testing**: Local entropy/avalanche/bit balance testing modules included.
+- **Recovery Key**: Generates recovery key based on your main Password and Nonce.
+- **Counter Mode**: Securely manages encryption and decryption using a counter mode.
+- **SIMD Support**: Processing through single instruction but multiple data. (Performance boost)
+- **TPM Operations**: Securely manages cryptographic operations using Trusted Platform Module (TPM).
 - **512-bit Key Support**: Supports keys of up to 512 bits for enhanced security.
 - **Constant-Time Execution (Locally Verified)**: All critical operations are implemented to run in constant time, minimizing timing side-channel risks. While extensive local testing confirms stability across various inputs, third-party validation is recommended for formal assurance.
 - **Salt Support**: Cryptographic salt generation using `Salt::new()` to prevent rainbow table attacks.
@@ -27,188 +140,121 @@ It supports parallel processing, GPU acceleration, and modular cryptographic com
 - **Wrap-All Support**: Seamlessly wraps salt, nonce, version, etc. into final output.
 - **MAC with SHA3-512**: Strong integrity validation and quantum resistance.
 - **Benchmark Support**: Time encryption/decryption operations with `.benchmark()`.
-- **Secure Key Derivation**: Argon2 + Blake3 for password hashing.
+- **Secure Key Derivation**: Argon2 for password hashing.
 - **Dynamic S-boxes**: Based on password, nonce, or both.
-- **Finite Field Arithmetic**: Galois Field operations similar to AES MixColumns.
+- **Finite Field Arithmetic**: Galois Field operations similar to AES MixColumns and you can use AES MixColumns.
+- **Dummy Data**:
+  - **Input Shield:** If input is empty, generates 1 B–8 KB of random “junk.”
+  - **Output Decoys:** Appends up to 10 KB of extra random bytes post-encryption to confuse size-based analysis.
 - **Parallel Processing**: Uses Rayon for multicore CPU support.
-- **GPU Acceleration**: OpenCL backend for fast encryption/decryption.
-⚠️ Note: Due to current OpenCL driver or platform behavior, minor memory leaks (typically ≤ 100 bytes) may occur during GPU execution. These do not affect cryptographic correctness and are not classified as critical, but future updates aim to address this.
 - **Zeroized Memory**: Automatic clearing of sensitive data in RAM.
 - **Perfect Distribution**:
-- Exhaustive statistical tests confirms near-theoretical perfection:
-    - Shannon Entropy: `8.0000` (Perfect randomness, Max)
-    - Bit Balance: `1.0000` (Perfect bit distribution, Max)
-    - Avalanche Effect: `0.5000` (Ideal avalanche ratio)
-- Verified over 10,000 independent test runs.
+  - Exhaustive statistical tests confirms near-theoretical perfection:
+    - Shannon Entropy: `8.0000`, which we reach 7.99999+ (Perfect randomness, Max, Normal: 7.99999+, Min: 7.98)
+    - Bit Balance: `1.0000`, which we reach 0.999+ (Perfect bit distribution, Max, Normal: 0.99-1, Min: 0.98)
+    - Avalanche Effect: `0.5000`, which we reach 0.499+ (Ideal avalanche ratio, Max, Normal: 0.5, Min: 0.49)
+  - Verified over 10,000 independent test runs.
 - **Memory Hard**: Algorithm is designed to be memory-hard, making it resistant to brute-force attacks even with large amounts of memory.
 - **Zero Memory Leak (Verified in Local Testing)**:
-Extensive `Valgrind` testing under multiple stress scenarios (including 25x repeat encryption) shows zero **definite** or **indirect** memory leaks.
-(Note: Not yet validated by third-party audits or formal verification tools.)
+  Extensive `Valgrind` testing under multiple stress scenarios (including 25x repeat encryption) shows zero **definite** or **indirect** memory leaks.
+  (Note: Not yet validated by third-party audits or formal verification tools.)
 
 ---
 
 ## Cryptographic Components
 
 - **Argon2**: Memory-hard password hashing
-- **Blake3**: Fast cryptographic hash for key derivation
-- **SHA3-512**: Default MAC function with post-quantum resilience
+- **SHA-3**: Default MAC function & HASH function with post-quantum resilience
 - **Custom S-box**: Deterministic but unique per configuration
-- **Galois Field**: MixColumns-like transformation layer
+- **Shift Rows**: Using similar algorithm to AES
+- **Galois Field**: MixColumns transformation layer
 - **Dynamic Chunk Shifting**: Adaptive chunk size adjustment based on nonce, password, data length
 - **Block Mix**: Efficiently Mixing data
-- **XOR Layer**: Basic XOR layer for data mixing with Rotation
+- **RXA Layer**: Rotate + XOR + Add in one operation (If it seems basic; no it's provides HIGH security)
 - **MAC Validation**: Ensures authenticity and tamper-resistance
+- **TPM Operations**: Securely manages cryptographic operations using Trusted Platform Module (TPM)
 
 ---
 
-## Configuration Options
-
-### Device Selection
+### How to use TPM:
 ```rust
-pub enum DeviceList {
-    Auto,
-    Cpu,
-    Gpu,
-}
-```
+let manager = TpmModule;
+let nonce = Nonce::generate_nonce(
+    None,
+    NonceType::Tpm(
+        config.hardware,
+        manager,
+        manager.generate_context(config.hardware).unwrap(),
+    ),
+)
+.unwrap();
 
-### S-box Generation
-```rust
-pub enum SboxTypes {
-    PasswordBased,
-    NonceBased,
-    PasswordAndNonceBased,
-}
-```
+let salt = Salt::tpm_salt(
+    config.hardware,
+    manager,
+    &mut manager.generate_context(config.hardware).unwrap(),
+)
+.unwrap();
 
-### Galois Field Polynomial
-```rust
-pub enum IrreduciblePoly {
-    AES,
-    Custom(u8),
-}
-```
-
-### Predefined Profiles
-```rust
-pub enum Profile {
-    Secure,
-    Balanced,
-    Fast,
-    Max,
-}
-```
-
-### Nonce Types
-```rust
-pub enum NonceData {
-    TaggedNonce([u8; 32]),
-    HashedNonce([u8; 32]),
-    Nonce([u8; 32]),
-    MachineNonce([u8; 32]),
-}
-```
-
-## Usage Examples
-
-### Basic Encryption/Decryption
-```rust
-use atom_crypte::{AtomCrypteBuilder, Config, Profile, Rng, Nonce};
-
-let nonce = Nonce::nonce(Rng::osrng());
-let config = Config::default();
-
-let encrypted = AtomCrypteBuilder::new()
-    .data("Hello, world!".as_bytes())
-    .password("secure_password")
-    .nonce(nonce)
-    .config(config)
-    .wrap_all(true) // Optional
-    .benchmark() // Optional
-    .encrypt()
-    .expect("Encryption failed");
-
-let decrypted = AtomCrypteBuilder::new()
-    .data(&encrypted)
-    .password("secure_password")
-    .config(config)
-    .wrap_all(true) // Optional
-    .benchmark() // Optional
-    .decrypt()
-    .expect("Decryption failed");
-
-assert_eq!(decrypted, "Hello, world!".as_bytes());
-```
-### How to use salt
-```rust
-let salt = Salt::new();
-let encrypted = AtomCrypteBuilder::new()
-    .data("Important secrets".as_bytes())
-    .password("your_password")
-    .nonce(Nonce::nonce(Rng::osrng()))
-    .config(Config::default())
-    .wrap_all(true) // Optional
-    .salt(salt) // Optional but recommended
-    .benchmark() // Optional
-    .encrypt()
-    .expect("Encryption failed");
-
-// Or you can turn byte slice into Salt
+// How to enable TPM hashing (EXAMPLE):
+let config = Config::default().set_hardware(Hardware::new().set_hardware_hashing(true));
 ```
 
 ### Custom Configuration
-- 🚧 If you forget your configuration, you won't be able to decrypt the data. (Especially important if you changed round count, S-box type, Key Length, or polynomial.)
+- 🚧 If you forget your configuration, you won't be able to decrypt the data. (Especially important if you changed round count, Key Length, or polynomial.)
 ```rust
-use atom_crypte::{AtomCrypteBuilder, Config, DeviceList, SboxTypes, IrreduciblePoly};
+use crystalyst::{CrystalystBuilder, Config, DeviceList, SboxTypes, IrreduciblePoly};
 
 let config = Config::default()
-    .with_device(DeviceList::Gpu)
-    .with_sbox(SboxTypes::PasswordAndNonceBased)
-    .set_thread(4)
-    .gf_poly(IrreduciblePoly::Custom(0x4d))
+    .set_thread(ThreadStrategy::Custom(4))
+    .gf_poly(IrreduciblePoly::Custom(0x14d))
     .rounds(6); // 6 ~ 8 Rounds recommended
 ```
 
 ### Using Predefined Profiles
 ```rust
-use atom_crypte::{AtomCrypteBuilder, Config, Profile};
+use crystalyst::{Config, Profile};
 
 let config = Config::from_profile(Profile::Secure);
 ```
 
 ### Machine-specific Encryption
 ```rust
-use atom_crypte::{AtomCrypteBuilder, Config, Nonce};
+use crystalyst::{CrystalystBuilder, Config, Nonce};
 
-let nonce = Nonce::machine_nonce(None); // You can generate via Machine info + Rng
+let nonce = Nonce::generate_nonce(None, NonceType::Machine); // You can generate via Machine info + Rng
 let password = "your_password_here".machine_rng(false); // False means no distro lock
 ```
 
-## Performance
+---
 
-- **CPU**: Parallelized via Rayon
-- **GPU**: OpenCL enabled
-- **Benchmarks**: ~100MB ≈ 1s encryption/decryption on average device
-- **Benchmarks**: ~20MB ≈ 1s encryption/decryption on low-end device
+## 💡 Roadmap
 
-## Security Considerations
+- Test Suite
+- Machine-level access controls (Kind of done via AVX2 support)
 
-- Constant-time comparisons
-- All critical operations are constant-time
-- Memory zeroization
-- Authenticated encryption with SHA3 MAC
-- Configurable number of layers and rounds
-- Defense-in-depth: multiple cryptographic operations layered !*/
+---
+
+## 📄 License
+
+Licensed under the [MIT license](LICENSE).
+
+---
+
+## ✍️ Author
+
+Developed by **Metehan Eyyub Zaferoğlu**
+Contact: [metehanzafer@proton.me](mailto:metehanzafer@proton.me) !*/
 
 use argon2::{Algorithm, Argon2, Params, Version};
 use base64::{Engine, prelude::BASE64_STANDARD};
-use blake3::derive_key;
 use engine::engine::*;
 use hmac::Hmac;
 use hmac::Mac;
-use rand::{RngCore, TryRngCore, random_range, rngs::OsRng};
+use rand::thread_rng;
+use rand::{Rng, RngCore, rngs::OsRng};
 use rayon::prelude::*;
-use sha3::{Digest, Sha3_512};
+use sha3::{Digest, Sha3_256, Sha3_512};
 use std::sync::Arc;
 use std::time::Instant;
 use subtle::{ConstantTimeEq, ConstantTimeLess};
@@ -219,8 +265,9 @@ use tss_esapi::structures::MaxBuffer;
 use tss_esapi::tcti_ldr::DeviceConfig;
 use zeroize::Zeroize;
 mod engine;
+pub mod kyber;
 
-static VERSION: &[u8] = b"atom-version:0x7";
+static VERSION: &[u8] = b"CRYSTALYST-version:0x8";
 
 /// Represents different types of nonces used in the encryption process.
 /// - TaggedNonce: Nonce combined with a user-provided tag
@@ -286,8 +333,10 @@ pub enum Errors {
     InverseError(String),
     #[error("Chunk Error: {0}")]
     ChunkError(String),
-    #[error("0.7.0 is not backward compatible")]
+    #[error("CRYSTALYST is not backward compatible with AtomCrypte")]
     NotBackwardCompatible,
+    #[error("Kyber Error: {0}")]
+    KyberError(String),
 }
 
 /// Represents different types of irreducible polynomials that can be used for encryption and decryption.
@@ -409,7 +458,7 @@ impl Hardware {
     }
 }
 
-/// Configuration for AtomCrypte encryption/decryption operations.
+/// Configuration for CRYSTALYST encryption/decryption operations.
 ///
 /// # Security Profiles
 /// Use `Config::from_profile()` for predefined security levels, or customize individual options.
@@ -1046,17 +1095,17 @@ impl AsNonce for Vec<u8> {
 }
 
 /// Generates a random nonce using the operating system's random number generator.
-pub enum Rng {
+pub enum RNG {
     OsRngNonce([u8; 32]),
     TaggedOsRngNonce([u8; 32]),
     ThreadRngNonce([u8; 32]),
 }
 
-impl Rng {
+impl RNG {
     /// Generates a random nonce using the machine's random number generator.
     pub fn thread_rng() -> Self {
         let mut nonce = [0u8; 32];
-        rand::rng().fill_bytes(&mut nonce);
+        rand::thread_rng().fill_bytes(&mut nonce);
         Self::ThreadRngNonce(nonce)
     }
 
@@ -1128,17 +1177,19 @@ impl MachineRng for str {
         }
         data.extend_from_slice(self.as_bytes());
 
-        let hash = blake3::hash(&data);
-        hash.to_hex().to_string()
+        let mut hash = Sha3_256::new();
+        hash.update(&data);
+        let hash = hash.finalize();
+        hash.to_vec().as_base64()
     }
 }
 
-/// ### Builder for AtomCrypte
+/// ### Builder for CRYSTALYST
 /// - You can encrypte & decrypte data using the builder.
-pub struct AtomCrypteBuilder {
+pub struct CrystalystBuilder {
     config: Option<Config>,
     data: Option<Vec<u8>>,
-    password: Option<String>,
+    password: Option<Vec<u8>>,
     nonce: Option<NonceData>,
     salt: Option<Salt>,
     decryption_key: Option<String>,
@@ -1215,7 +1266,7 @@ pub enum NonceType {
 }
 
 impl Nonce {
-    pub fn generate_nonce(rng: Option<Rng>, nonce_type: NonceType) -> Result<NonceData, Errors> {
+    pub fn generate_nonce(rng: Option<RNG>, nonce_type: NonceType) -> Result<NonceData, Errors> {
         match nonce_type {
             NonceType::Classic => {
                 let rng = rng.ok_or(Errors::RngRequired)?;
@@ -1236,33 +1287,48 @@ impl Nonce {
         }
     }
 
-    fn hashed_nonce(rng: Rng) -> NonceData {
+    fn hashed_nonce(rng: RNG) -> NonceData {
         let mut nonce = *rng.as_bytes();
-        let number: u8 = rand::random_range(0..255);
+        let number: u8 = thread_rng().gen_range(0..255);
 
         for i in 0..=number {
             let mut mix = nonce.to_vec();
             mix.push(i as u8);
-            nonce = *blake3::hash(&mix).as_bytes();
+            let mut out = [0u8; 32];
+            let mut hash = Sha3_256::new();
+            hash.update(&mix);
+            out.copy_from_slice(hash.finalize().to_vec().as_slice());
+            nonce = out;
         }
 
         NonceData::HashedNonce(nonce)
     }
 
-    fn tagged_nonce(rng: Rng, tag: &[u8]) -> NonceData {
+    fn tagged_nonce(rng: RNG, tag: &[u8]) -> NonceData {
         let mut nonce = *rng.as_bytes();
-        let number: u8 = rand::random_range(0..255);
+        let number: u8 = thread_rng().gen_range(0..255);
 
         for i in 0..=number {
             let mut mix = nonce.to_vec();
             mix.push(i as u8);
-            nonce = *blake3::hash(&mix).as_bytes();
+            let mut out = [0u8; 32];
+            let mut hash = Sha3_256::new();
+            hash.update(&mix);
+            out.copy_from_slice(hash.finalize().to_vec().as_slice());
+            nonce = out;
         }
 
-        NonceData::TaggedNonce(*blake3::hash(&[&nonce, tag].concat()).as_bytes()) // Hash the nonce to get a 32 byte more random nonce (Extra Security)
+        let mut output = [0u8; 32];
+        let mut hash = Sha3_256::new();
+        hash.update(nonce);
+        hash.update(tag);
+        let out = hash.finalize().to_vec();
+        output.copy_from_slice(&out);
+
+        NonceData::TaggedNonce(output) // Hash the nonce to get a 32 byte more random nonce (Extra Security)
     }
 
-    fn machine_nonce(rng: Option<Rng>) -> NonceData {
+    fn machine_nonce(rng: Option<RNG>) -> NonceData {
         let user_name = whoami::username();
         let device_name = whoami::devicename();
         let real_name = whoami::realname();
@@ -1279,14 +1345,18 @@ impl Nonce {
             all_data.extend_from_slice(rng.as_bytes());
         }
 
-        let hash = blake3::hash(&all_data);
+        let mut out = [0u8; 32];
+        let mut hash = Sha3_256::new();
+        hash.update(&all_data);
+        let hash = hash.finalize().to_vec();
+        out.copy_from_slice(hash.as_slice());
 
-        NonceData::MachineNonce(*hash.as_bytes())
+        NonceData::MachineNonce(out)
     }
 
-    fn nonce(rng: Rng) -> NonceData {
+    fn nonce(rng: RNG) -> NonceData {
         let nonce = *rng.as_bytes();
-        let number: u8 = random_range(0..255);
+        let number: u8 = thread_rng().gen_range(0..255);
 
         let new_nonce_vec = nonce
             .iter()
@@ -1330,8 +1400,8 @@ impl Salt {
     /// Generates a new salt using a combination of random bytes from the thread and OS random number generators.
     /// - You have to save this salt to a file or database, or you can add directly to encrypted data.
     pub fn salt() -> Self {
-        let rng = *Rng::thread_rng().as_bytes();
-        let mix_rng = *Rng::osrng().as_bytes();
+        let rng = *RNG::thread_rng().as_bytes();
+        let mix_rng = *RNG::osrng().as_bytes();
         let hash_rng = vec![rng, mix_rng].concat();
         let mut out = Vec::new();
 
@@ -1436,25 +1506,15 @@ fn derive_password_key(
     Ok(out)
 }
 
-// TODO: Better key verification system via new dervition system; While Argon2 getting better salt Key will become more secure and easy to verify
-fn verify_keys_constant_time(key1: &[u8], key2: &[u8]) -> Result<bool, Errors> {
-    if key1.len().ct_eq(&key2.len()).unwrap_u8() != 1 {
-        return Ok(false);
-    }
-
-    let result = key1.ct_eq(key2).unwrap_u8() == 1;
-    Ok(result)
-}
-
 // -----------------------------------------------------
 
 fn secure_zeroize(data: &mut [u8], config: &Config) {
     if data.len() < 1024 * 1024 * 5 && config.secure_zeroize && config.zeroize {
         use rand::Rng;
-        let mut rng = rand::rng();
+        let mut rng = thread_rng();
 
         for byte in data.iter_mut() {
-            *byte = rng.random::<u8>();
+            *byte = rng.gen_range(0..=1) as u8;
         }
     }
 
@@ -1776,7 +1836,7 @@ fn parse_recovery_key(input: &str, nonce: &[u8]) -> Result<Vec<u8>, Errors> {
 }
 
 fn encrypt(
-    password: &str,
+    password: &[u8],
     data: &mut [u8],
     nonce: NonceData,
     config: Config,
@@ -1802,11 +1862,10 @@ fn encrypt(
 
     let nonce = nonce.as_bytes();
     let mut pwd = if config.key_derivation {
-        let password = derive_key(password, nonce);
-        let pwd = derive_password_key(&password, nonce, custom_salt, config)?;
+        let pwd = derive_password_key(password, nonce, custom_salt, config)?;
         pwd
     } else {
-        password.as_bytes().to_vec()
+        password.to_vec()
     };
 
     if let Some(recovery_key) = recovery_key {
@@ -1824,18 +1883,16 @@ fn encrypt(
     }
 
     {
-        let version_pwd = blake3::hash(b"atom-crypte-password");
-        let version_pwd = *version_pwd.as_bytes();
-        let encrypted_version = rxa_encrypt(nonce, &version_pwd, &mut VERSION.to_vec(), config)?;
+        let encrypted_version = rxa_encrypt(&pwd, &mut VERSION.to_vec(), config)?;
         out_vec.extend(encrypted_version);
     }
 
-    let mut key_mixed_data = rxa_encrypt(nonce, &pwd, data, config)?;
+    let mut key_mixed_data = rxa_encrypt(&pwd, data, config)?;
 
     let mut sbox_data = s_bytes(&mut key_mixed_data, nonce, &pwd, config)?;
     secure_zeroize(&mut key_mixed_data, &config);
 
-    let mut rxa_mix = rxa_encrypt(nonce, &pwd, &mut sbox_data, config)?;
+    let mut rxa_mix = rxa_encrypt(&pwd, &mut sbox_data, config)?;
     secure_zeroize(&mut sbox_data, &config);
 
     let mut gf_data = apply_gf(&mut rxa_mix, &config, &gf, nonce)?;
@@ -1855,7 +1912,11 @@ fn encrypt(
     for i in 1..=config.rounds {
         let slice_end = std::cmp::min(i * 32, pwd.len());
         let round_key = match config.key_length {
-            KeyLength::Key256 => blake3::hash(&pwd[..slice_end]).as_bytes().to_vec(),
+            KeyLength::Key256 => {
+                let mut hash = Sha3_256::new();
+                hash.update(&pwd[..slice_end]);
+                hash.finalize().to_vec()
+            }
             KeyLength::Key512 => {
                 let mut hash = Sha3_512::new();
                 hash.update(&pwd[..slice_end]);
@@ -1866,7 +1927,7 @@ fn encrypt(
         let crypted_chunks = round_data
             .par_chunks_mut(1024 * 1024)
             .map(|data: &mut [u8]| {
-                let mut xor_data = rxa_encrypt(nonce, &round_key, data, config)?;
+                let mut xor_data = rxa_encrypt(&round_key, data, config)?;
 
                 match config.multi_round_galois_field {
                     true => apply_gf(&mut xor_data, &config, &gf, nonce),
@@ -1897,8 +1958,15 @@ fn encrypt(
         shift_rows(&mut crypted[..64], &config);
     }
 
-    let mut mac_data = Vec::from(blake3::hash(&data_for_mac).as_bytes());
-    mac_data.extend(blake3::hash(&crypted).as_bytes());
+    let mut hash_data = Sha3_512::new();
+    hash_data.update(&crypted);
+    let mac_data_1 = hash_data.finalize().to_vec();
+    let meta_data = vec![0xac, 0x07, 0x13, 0x00];
+    let mut mac_data = Vec::from(data_for_mac);
+    mac_data.extend(&mac_data_1);
+    mac_data.extend(VERSION);
+    mac_data.extend(meta_data);
+    mac_data.extend(nonce);
     let mac = calculate_hmac(&pwd, &mac_data)?;
 
     secure_zeroize(&mut pwd, &config);
@@ -1924,7 +1992,7 @@ fn encrypt(
 // -----------------------------------------------------
 
 fn decrypt(
-    password: &str,
+    password: &[u8],
     data: &[u8],
     nonce: Option<NonceData>,
     config: Config,
@@ -1944,25 +2012,11 @@ fn decrypt(
     let nonce_byte = nonce_data.as_bytes();
 
     let pwd = if config.key_derivation {
-        let password_hash: [u8; 32] = derive_key(password, nonce_byte);
-        let mut expected_password = derive_password_key(
-            &derive_key(password, nonce_byte),
-            nonce_byte,
-            custom_salt,
-            config,
-        )?;
-        let mut pwd = derive_password_key(&password_hash, nonce_byte, custom_salt, config)?;
+        let pwd = derive_password_key(password, nonce_byte, custom_salt, config)?;
 
-        if !verify_keys_constant_time(&pwd, &expected_password)? {
-            secure_zeroize(&mut pwd, &config);
-            secure_zeroize(&mut expected_password, &config);
-            return Err(Errors::InvalidMac("Invalid key".to_string()));
-        }
-
-        secure_zeroize(&mut expected_password, &config);
         pwd
     } else {
-        password.as_bytes().to_vec()
+        password.to_vec()
     };
 
     let mut pwd = if let Some(key) = recovery_key {
@@ -1991,22 +2045,20 @@ fn decrypt(
     };
 
     // Version verification
-    let version_pwd = blake3::hash(b"atom-crypte-password");
-    let version_pwd = *version_pwd.as_bytes();
     let mut encrypted_version = encrypted_version.to_vec();
-    let version = rxa_decrypt(nonce_byte, &version_pwd, &mut encrypted_version, config)?;
+    let version = rxa_decrypt(&pwd, &mut encrypted_version, config)?;
 
-    if !version.starts_with(b"atom-version") {
+    if !version.starts_with(b"CRYSTALYST-version") {
         secure_zeroize(&mut pwd, &config);
         return Err(Errors::InvalidAlgorithm);
     }
 
-    if version.starts_with(b"atom-version:0x5") {
+    if version.starts_with(b"atom-version:0x7") {
         secure_zeroize(&mut pwd, &config);
         return Err(Errors::NotBackwardCompatible);
     }
 
-    let (mut crypted, mac_key) = if version.starts_with(b"atom-version:0x7") && wrapped {
+    let (mut crypted, mac_key) = if version.starts_with(b"CRYSTALYST-version:0x8") && wrapped {
         let (data_without_salt, _) = rest.split_at(rest.len() - 32);
         let (crypted, mac_key) = data_without_salt.split_at(data_without_salt.len() - 64);
         (crypted.to_vec(), mac_key.to_vec())
@@ -2015,7 +2067,9 @@ fn decrypt(
         (crypted.to_vec(), mac_key.to_vec())
     };
 
-    let mac_data_1 = blake3::hash(&crypted).as_bytes().to_vec();
+    let mut hash_data = Sha3_512::new();
+    hash_data.update(&crypted);
+    let mac_data_1 = hash_data.finalize().to_vec();
 
     if config.ctr_layer {
         inverse_shift_rows(&mut crypted[..64], &config);
@@ -2030,7 +2084,11 @@ fn decrypt(
     for i in (1..=config.rounds).rev() {
         let slice_end = std::cmp::min(i * 32, pwd.len());
         let round_key = match config.key_length {
-            KeyLength::Key256 => blake3::hash(&pwd[..slice_end]).as_bytes().to_vec(),
+            KeyLength::Key256 => {
+                let mut hash = Sha3_256::new();
+                hash.update(&pwd[..slice_end]);
+                hash.finalize().to_vec()
+            }
             KeyLength::Key512 => {
                 let mut hash = Sha3_512::new();
                 hash.update(&pwd[..slice_end]);
@@ -2049,7 +2107,7 @@ fn decrypt(
                     },
                 };
 
-                rxa_decrypt(nonce_byte, &round_key, &mut gf_reversed, config)
+                rxa_decrypt(&round_key, &mut gf_reversed, config)
                     .map_err(|e| Errors::InvalidXor(e.to_string()))
             })
             .try_reduce_with(|mut acc, mut next| {
@@ -2072,18 +2130,21 @@ fn decrypt(
     let mut ungf_data = apply_gf(&mut unshifted_data, &config, &gf, nonce_byte)?;
     secure_zeroize(&mut unshifted_data, &config);
 
-    let mut rxa_unmixed = rxa_decrypt(nonce_byte, &pwd, &mut ungf_data, config)?;
+    let mut rxa_unmixed = rxa_decrypt(&pwd, &mut ungf_data, config)?;
     secure_zeroize(&mut ungf_data, &config);
 
     let mut unsbox_data = in_s_bytes(&mut rxa_unmixed, nonce_byte, &pwd, config)?;
     secure_zeroize(&mut rxa_unmixed, &config);
 
-    let mut decrypted_data = rxa_decrypt(nonce_byte, &pwd, &mut unsbox_data, config)?;
+    let mut decrypted_data = rxa_decrypt(&pwd, &mut unsbox_data, config)?;
     secure_zeroize(&mut unsbox_data, &config);
 
-    let mut mac_data = Vec::from(blake3::hash(&decrypted_data).as_bytes());
-    mac_data.extend(&mac_data_1);
-
+    let metdata = vec![0xac, 0x07, 0x13, 0x00];
+    let mut mac_data = Vec::from(decrypted_data.clone());
+    mac_data.extend(mac_data_1);
+    mac_data.extend(version);
+    mac_data.extend(metdata);
+    mac_data.extend(nonce_byte);
     let mut mac = calculate_hmac(&pwd, &mac_data)?;
 
     if mac.ct_eq(&mac_key).unwrap_u8() != 1 {
@@ -2140,8 +2201,8 @@ impl Utils {
     }
 }
 
-impl AtomCrypteBuilder {
-    /// Creates a new instance of AtomCrypteBuilder.
+impl CrystalystBuilder {
+    /// Creates a new instance of CrystalystBuilder.
     pub fn new() -> Self {
         Self {
             password: None,
@@ -2168,8 +2229,8 @@ impl AtomCrypteBuilder {
     }
 
     /// Sets the password for the encryption.
-    pub fn password(mut self, password: &str) -> Self {
-        self.password = Some(password.to_string());
+    pub fn password(mut self, password: &[u8]) -> Self {
+        self.password = Some(password.to_vec());
         self
     }
 
@@ -2228,7 +2289,7 @@ impl AtomCrypteBuilder {
         if benchmark {
             let start = Instant::now();
             let out = encrypt(
-                password.as_str(),
+                &password,
                 &mut data,
                 nonce,
                 config,
@@ -2241,7 +2302,7 @@ impl AtomCrypteBuilder {
             Ok(out)
         } else {
             encrypt(
-                password.as_str(),
+                &password,
                 &mut data,
                 nonce,
                 config,
@@ -2283,7 +2344,7 @@ impl AtomCrypteBuilder {
         if benchmark {
             let start = Instant::now();
             let out = decrypt(
-                password.as_str(),
+                &password,
                 &data,
                 nonce,
                 config,
@@ -2296,7 +2357,7 @@ impl AtomCrypteBuilder {
             out
         } else {
             decrypt(
-                password.as_str(),
+                &password,
                 &data,
                 nonce,
                 config,
@@ -2378,7 +2439,7 @@ impl Calculate {
     }
 
     pub fn generate_random_data(size: usize) -> Vec<u8> {
-        let mut rng = rand::rng();
+        let mut rng = rand::thread_rng();
         let mut out = vec![0u8; size];
         rng.fill_bytes(&mut out);
         out

@@ -1,6 +1,6 @@
-# AtomCrypte Pre-Release Testing Checklist (v0.7.0)
+# CRYSTALYST Pre-Release Testing Checklist (v0.8.0)
 
-This document outlines all critical testing procedures that must be completed before publishing a new version of AtomCrypte.
+This document outlines all critical testing procedures that must be completed before publishing a new version of CRYSTALYST.
 
 ---
 

@@ -1,8 +1,8 @@
-# AtomCrypte - Comprehensive Test Results
+# CRYSTALYST - Comprehensive Test Results
 
 ## Executive Summary
 
-**Algorithm:** AtomCrypte
+**Algorithm:** CRYSTALYST
 
 **Test Data:** 50MB (400,000,640 bits)
 

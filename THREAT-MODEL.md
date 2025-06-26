@@ -1,15 +1,14 @@
-# AtomCrypte Threat Model (v0.7.0)
+# CRYSTALYST Threat Model (v0.7.0)
 
 ## Purpose
 
-AtomCrypte is a high-performance, multi-layered, highly-configurable encryption library written in Rust. It provides robust data confidentiality and integrity through modern cryptographic primitives, dynamic S-boxes, multi-round transformations, full parallelism, and optional SIMD support. Version 0.7.0 introduces constant-time configurable cryptographic operations, TPM-backed entropy, and an enhanced configuration system.
+CRYSTALYST is a high-performance, multi-layered, highly-configurable encryption library written in Rust. It provides robust data confidentiality and integrity through modern cryptographic primitives, dynamic S-boxes, multi-round transformations, full parallelism, and optional SIMD support. Version 0.8.0 introduces constant-time configurable cryptographic operations, TPM-backed entropy, and an enhanced configuration system.
 
 ---
 
 ## Scope & Limitations
 
 * Designed for **file or data-at-rest encryption**
-* **Not optimized for streaming** or real-time traffic (planned for v0.8.0)
 * **Key, nonce, and salt management** must be handled by user unless `.wrap_all(true)` is enabled
 * **Not backward compatible** with earlier versions (e.g., v0.6.x and below)
 * **Experimental**, under active development — **formal audits pending**
@@ -84,7 +83,7 @@ AtomCrypte is a high-performance, multi-layered, highly-configurable encryption 
 
 ## Summary
 
-AtomCrypte (v0.7.0) offers:
+CRYSTALYST (v0.8.0) offers:
 
 * **Dynamic, configurable cryptographic layers**
 * **TPM-backed entropy and constant-time logic**

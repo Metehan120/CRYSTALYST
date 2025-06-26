@@ -1,6 +1,6 @@
 [package]
-name = "atomcrypte"
-version = "0.7.0"
+name = "crystalyst"
+version = "0.8.0"
 edition = "2024"
 description = "A modern, flexible and 'EXPERIMENTAL' cryptographic library for Rust"
 license = "MIT"
@@ -9,8 +9,8 @@ repository = "https://github.com/Metehan120/AtomCrypte"
 keywords = ["encryption", "crypto", "secure", "rust", "flex"]
 
 [dependencies]
-rand = "0.9"
-blake3 = "1.8"
+rand = "=0.8.5"
+rand_core = { version = "=0.6.4", features = ["std"] }
 rayon = "1"
 subtle = "2.6"
 thiserror = "2.0"
@@ -24,6 +24,8 @@ hmac = "0.12"
 sysinfo = "0.35.2"
 bytemuck = "1.23"
 tss-esapi = "7.6.0"
+secrecy = "0.10.3"
+pqc_kyber = { version = "0.7.1", features = ["kyber512", "std", "zeroize"] }
 
 [profile.release]
 opt-level = 3

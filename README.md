@@ -1,58 +1,71 @@
-# AtomCrypte
-📢 Latest Major Release: [v0.7.0 - Configuration Revolution](CHANGELOGS.md)
-[![Crates.io](https://img.shields.io/crates/v/atomcrypte)](https://crates.io/crates/atomcrypte)
-[![Crates.io](https://img.shields.io/crates/d/atomcrypte)](https://crates.io/crates/atomcrypte)
-[![Crates.io](https://img.shields.io/crates/l/atomcrypte)](https://crates.io/crates/atomcrypte)
+# CRYSTALYST – High-Performance Encryption
+[![Crates.io](https://img.shields.io/crates/v/crystalyst)](https://crates.io/crates/crystalyst)
+[![Downloads](https://img.shields.io/crates/d/crystalyst)](https://crates.io/crates/crystalyst)
+[![License](https://img.shields.io/crates/l/crystalyst)](LICENSE)
 
-## 📊 Statistical Test Results
+> **Note:** CRYSTALYST was formerly known as **AtomCrypte**.
+
+> **Where does the name come from?**
+> Inspired by the fusion of **CRYSTAL** (clarity, structure) and **CATALYST** (accelerator). Thus: **CRYSTAL** + catal**YST** = **CRYSTALYST**.
+
+- CRYSTALYST formally known as AtomCrypte
+- [Pre-Release Testing](PRERELEASE-TESTING.md)
+- [Known Issues](KNOWN-ISSUES.md)
+- [Threat Model](THREAT-MODEL.md)
+
+---
+
+## ⚠️ Disclaimer
+
+- **This project is experimental and not production-ready.**
+- While CRYSTALYST offers strong multi-layered cryptography with post-quantum primitives, it has **not been formally audited**.
+- Use at your own risk — especially in high-security or production environments.
+
+## NOT BACKWARD COMPATIBLE WITH AtomCrypte
+
+---
+
+## Statistical Test Results
 
 This implementation has been tested using official and widely recognized randomness testing suites:
 
 - ✅ NIST SP 800-22
 - ✅ Dieharder
 
-📢 **[Click here to view full test results](TEST_SUITES/OVERALL_SCORE.md)**
+**[Click here to view full test results](TEST_SUITES/OVERALL_SCORE.md)**
 All tests passed with strong or perfect ratings. A few tests flagged as “weak” due to extremely uniform results, which is acceptable.
 
-\> Note: Tests were conducted on encrypted output of a 50MB all-zero input using AtomCrypte with Argon2d. See `output.bin` for reproducibility.
-
-- OFFICIAL SITE & DOCUMENTATION: [SITE](https://atomcrypte.zaferoglu.me/main) / Currently not available
-- A high-performance, multi-layered encryption library designed for flexibility, security, and speed.
-- Secured with TPM operations and cryptographic algorithms.
-- You can find the Threat Model here: [Threat Model](THREAT-MODEL.md)
-- You can find changelogs here: [Changelogs](CHANGELOGS.md)
-- You can find Pre-Release steps testing here: [Pre-Release Testing](PRERELEASE-TESTING.md)
-- Known Issues: [Known Issues](KNOWN-ISSUES.md)
+\> Note: Tests were conducted on encrypted output of a 50MB all-zero input using CRYSTALYST with Argon2d. See `output.bin` for reproducibility.
 
 ---
 
-## ⚠️ WARNING: Make sure your configuration (rounds, key length, etc.) matches exactly during decryption. If not, decryption will fail silently or return garbage data.
+## Features at a Glance
 
-## 🚧 Disclaimer
-- This project is currently experimental and is not recommended for production environments.
-- While it offers strong multi-layered security, including quantum-resilient techniques, it has not undergone formal third-party audits.
-- It has been developed for academic research, cryptographic experimentation, and educational purposes.
-- **Use at your own discretion, and apply additional caution in critical systems.**
-- \+ Use TPM operations for secure Nonce + Salt generation and Secure Hashing
-- \> In future, Tirangle MixColumns will be optimized if exceed AES results will switch to Triangle MixColumns.
-- \> Zeroize now disabled by default, you can choose: Secure, Fortress, Extreme profiles for zeroize or you can enable it by your own.
+- Offers strong multi-layered cryptography and post-quantum primitives.
+- No formal third-party audits have been conducted.
+- Built for **research**, **experimentation**, and **educational use**.
+- TPM integration provides secure Nonce + Salt generation and secure hardware-backed hashing.
+- **Zeroize is disabled by default** for performance — enable via `Secure`, `Fortress`, or `Extreme` profiles for memory hygiene.
 
-## 🚧 Version 0.7 Disclaimer
-- If you're upgrading from v0.6.x:
-   - Encrypted files with previous configs **will not be decryptable**.
-   - Regenerate data or migrate configs manually.
----
-
-## Overview
-
-AtomCrypte is a robust encryption library that combines multiple cryptographic techniques to provide state-of-the-art security with configurable parameters.
-It supports parallel processing, and modular cryptographic components, enabling both performance and advanced customization.
+| Feature                      | Description                                                                 |
+|-----------------------------|-----------------------------------------------------------------------------|
+| Key512 Support           | True 512-bit key support, no shrink hacks                                   |
+| SHA3 Hashing             | Unified SHA3-256/SHA3-512 across MAC, S-Box, Hashing                        |
+| Dynamic S-Box Engine     | Golden ratio powered, per-encryption randomness                            |
+| Secure Key Cache         | SecretBox-backed, auto-zeroing cache                                        |
+| Counter Mode Encryption  | GCM-like stream cipher for high entropy                                     |
+| TPM Integration          | Hardware-backed hashing, nonce, and salt generation                         |
+| Entropy Analyzer         | Avalanche, balance, and Shannon tests built-in                             |
+| Hybrid MixColumns        | AES + Triangle Galois Field transforms                                      |
+| Configurable Complexity  | Profiles: `Fast`, `Secure`, `Extreme`, etc. or build your own                   |
+| Constant-Time Ops        | Constant-time key lookup, S-Box ops, and MAC comparisons                    |
+| SIMD Acceleration        | Full AVX2-backed XOR, ADD, SUB                                         |
 
 ---
 
 ## Dynamic S-Box generation:
-- \> AtomCrypte introduces a novel approach to Dynamic S-Box generation, ensuring each encryption operation uses a unique, unpredictable S-Box. This dynamic generation enhances security by preventing precomputed attacks and reducing the effectiveness of statistical analysis.
-### How good entrop is it providing?:
+- \> CRYSTALYST introduces a novel approach to Dynamic S-Box generation, ensuring each encryption operation uses a unique, unpredictable S-Box. This dynamic generation enhances security by preventing precomputed attacks and reducing the effectiveness of statistical analysis.
+### How much entropy does it provide?
 - \> It's providing 8.0000 shanon entropy, which is the maximum possible entropy, because always it has 256 bytes (0..255).
 ### How unique is it?
 - \>%99.99 (Almost never generates same S-Box), its not perfect because of the nature of the algorithm, and never can generate fully unique S-Box, but it's close to it.
@@ -68,6 +81,52 @@ It supports parallel processing, and modular cryptographic components, enabling 
 
 \> If same key (if you used Salt, same Salt needed as well) + nonce it will generate same S-Box, it's how it should be.
 
+---
+
+## Why CRYSTALYST?
+
+- Combines modern cryptographic primitives like SHA3, Argon2, and AVX2 for next-gen security.
+- Fully configurable — from chunk size to Galois field type.
+- Built-in statistical analysis tools for dev-time confidence.
+- Sane defaults, crazy flexibility.
+
+---
+
+## 📦 Installation
+
+```bash
+cargo add crystalyst
+```
+
+## Quick Example
+
+```rust
+use crystalyst::{CrystalystBuilder, Config, Nonce, Utils, NonceType};
+
+let nonce = Nonce::generate_nonce(None, NonceType::Classic);
+let utils = Utils::new().wrap_all(true);
+let config = Config::default();
+
+let encrypted = CrystalystBuilder::new()
+    .data(b"Hello, world!")
+    .password("super_secret_password")
+    .nonce(nonce)
+    .config(config)
+    .encrypt()
+    .expect("encryption failed");
+
+let decrypted = CrystalystBuilder::new()
+    .data(&encrypted)
+    .password("super_secret_password")
+    .config(config)
+    .decrypt()
+    .expect("decryption failed");
+
+assert_eq!(decrypted, b"Hello, world!");
+```
+
+---
+
 ## Key Features
 - **Testing**: Local entropy/avalanche/bit balance testing modules included.
 - **Recovery Key**: Generates recovery key based on your main Password and Nonce.
@@ -81,7 +140,7 @@ It supports parallel processing, and modular cryptographic components, enabling 
 - **Wrap-All Support**: Seamlessly wraps salt, nonce, version, etc. into final output.
 - **MAC with SHA3-512**: Strong integrity validation and quantum resistance.
 - **Benchmark Support**: Time encryption/decryption operations with `.benchmark()`.
-- **Secure Key Derivation**: Argon2 + Blake3 for password hashing.
+- **Secure Key Derivation**: Argon2 for password hashing.
 - **Dynamic S-boxes**: Based on password, nonce, or both.
 - **Finite Field Arithmetic**: Galois Field operations similar to AES MixColumns and you can use AES MixColumns.
 - **Dummy Data**:
@@ -105,8 +164,7 @@ It supports parallel processing, and modular cryptographic components, enabling 
 ## Cryptographic Components
 
 - **Argon2**: Memory-hard password hashing
-- **Blake3**: Fast cryptographic hash for key derivation
-- **SHA3-512**: Default MAC function with post-quantum resilience
+- **SHA3**: Default MAC function & HASH function with post-quantum resilience
 - **Custom S-box**: Deterministic but unique per configuration
 - **Shift Rows**: Using similar algorithm to AES
 - **Galois Field**: MixColumns transformation layer
@@ -117,85 +175,6 @@ It supports parallel processing, and modular cryptographic components, enabling 
 - **TPM Operations**: Securely manages cryptographic operations using Trusted Platform Module (TPM)
 
 ---
-
-## Configuration Options
-
-### Galois Field Polynomial
-```rust
-pub enum IrreduciblePoly {
-    AES,
-    Conway,
-    Custom(u8),
-}
-```
-
-### Predefined Profiles
-```rust
-pub enum Profile {
-    Extreme,
-    Fortress,
-    Max,
-    Secure,
-    Balanced,
-    Fast,
-}
-```
-
-### Nonce Types
-```rust
-pub enum NonceData {
-    TaggedNonce([u8; 32]),
-    HashedNonce([u8; 32]),
-    Nonce([u8; 32]),
-    MachineNonce([u8; 32]),
-}
-// TPM Nonce are using Nonce Enum tuple, you can find how to use down.
-```
-
-## Usage Examples
-
-### Basic Encryption/Decryption
-```rust
-use atom_crypte::{AtomCrypteBuilder, Config, Profile, Rng, Nonce};
-
-let nonce = Nonce::generate_nonce(Some(Rng::os_rng()), NonceType::Classic);
-let config = Config::default();
-let utils = Utils::new().wrap_all(true).benchmark(true);
-
-let encrypted = AtomCrypteBuilder::new()
-    .data("Hello, world!".as_bytes())
-    .password("secure_password")
-    .nonce(nonce)
-    .config(config)
-    .utils(utils)
-    .encrypt()
-    .expect("Encryption failed");
-
-let decrypted = AtomCrypteBuilder::new()
-    .data(&encrypted)
-    .password("secure_password")
-    .config(config)
-    .utils(utils)
-    .decrypt()
-    .expect("Decryption failed");
-
-assert_eq!(decrypted, "Hello, world!".as_bytes());
-```
-### How to use salt
-```rust
-let salt = Salt::new();
-let encrypted = AtomCrypteBuilder::new()
-    .data("Important secrets".as_bytes())
-    .password("your_password")
-    .nonce(nonce)
-    .config(Config::default())
-    .utils(utils)
-    .salt(salt) // Optional but recommended
-    .encrypt()
-    .expect("Encryption failed");
-
-// Or you can turn byte slice into Salt
-```
 
 ### How to use TPM:
 ```rust
@@ -224,7 +203,7 @@ let config = Config::default().set_hardware(Hardware::new().set_hardware_hashing
 ### Custom Configuration
 - 🚧 If you forget your configuration, you won't be able to decrypt the data. (Especially important if you changed round count, Key Length, or polynomial.)
 ```rust
-use atom_crypte::{AtomCrypteBuilder, Config, DeviceList, SboxTypes, IrreduciblePoly};
+use crystalyst::{CrystalystBuilder, Config, DeviceList, SboxTypes, IrreduciblePoly};
 
 let config = Config::default()
     .set_thread(ThreadStrategy::Custom(4))
@@ -234,50 +213,35 @@ let config = Config::default()
 
 ### Using Predefined Profiles
 ```rust
-use atom_crypte::{AtomCrypteBuilder, Config, Profile};
+use crystalyst::{Config, Profile};
 
 let config = Config::from_profile(Profile::Secure);
 ```
 
 ### Machine-specific Encryption
 ```rust
-use atom_crypte::{AtomCrypteBuilder, Config, Nonce};
+use crystalyst::{CrystalystBuilder, Config, Nonce};
 
 let nonce = Nonce::generate_nonce(None, NonceType::Machine); // You can generate via Machine info + Rng
 let password = "your_password_here".machine_rng(false); // False means no distro lock
 ```
-
-## Performance
-
-- **CPU**: Parallelized via Rayon
-- **Benchmarks**: ~100MB ≈ 1s encryption/decryption on average device
-- **Benchmarks**: ~20MB ≈ 1s encryption/decryption on low-end device
-- **Theoretical Benchmarks**: On HIGH-END server CPUs (e.g. AMD EPYC, Intel Xeon): 600MB/s theoretical speed.
-
-## Security Considerations
-
-- Constant-time comparisons
-- All critical operations are constant-time
-- Memory zeroization
-- Authenticated encryption with SHA3 MAC
-- Configurable number of layers and rounds
-- Defense-in-depth: multiple cryptographic operations layered
 
 ---
 
 ## 💡 Roadmap
 
 - Test Suite
-- Kyber (PQC) integration
-- Recovery key fallback
 - Machine-level access controls (Kind of done via AVX2 support)
 
-## License
+---
 
-[MIT License](LICENSE)
+## 📄 License
 
-## Credits
+Licensed under the [MIT license](LICENSE).
 
-- **Developer**: Metehan Eyyub Zaferoğlu
-- **E-Mail**: metehanzafer@proton.me
-- **Special thanks** to the Rust community, cryptography researchers, and open-source contributors inspiring robust, future-ready designs.
+---
+
+## ✍️ Author
+
+Developed by **Metehan Eyyub Zaferoğlu**
+Contact: [metehanzafer@proton.me](mailto:metehanzafer@proton.me)

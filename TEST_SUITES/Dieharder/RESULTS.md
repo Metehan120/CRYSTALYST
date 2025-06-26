@@ -1,6 +1,7 @@
-# AtomCrypte Statistical Test Results
+# CRYSTALYST Statistical Test Results
 
 ## Test Suite Summary
+
 **File:** output.bin (50MB)
 
 **Overall Success Rate:** 98%+
