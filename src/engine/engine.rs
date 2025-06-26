@@ -676,7 +676,7 @@ pub fn get_chunk_sizes(
             ^ (pos.wrapping_mul(0x9E3779B97F4A7C15));
         sizes_table.push(size.min(data_len - pos));
 
-        pos += size;
+        pos += size % 256 * 256;
     }
 
     Ok(sizes_table)
