@@ -141,7 +141,7 @@ dependencies = [
 
 [[package]]
 name = "crystalyst-rs"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "argon2",
  "base64 0.22.1",

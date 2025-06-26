@@ -657,7 +657,7 @@ impl Default for Config {
             secure_zeroize: false,
             zeroize: false,
             argon2_type: Argon2Type::Argon2id,
-            hardware: Hardware::new(),
+            hardware: Hardware::new().set_enable_avx2(false),
         }
     }
 }
@@ -854,7 +854,7 @@ impl Config {
                 secure_zeroize: false,
                 zeroize: false,
                 argon2_type: Argon2Type::Argon2id,
-                hardware: Hardware::new(),
+                hardware: Hardware::new().set_enable_avx2(false),
             },
             Profile::Balanced => Self {
                 thread_strategy: ThreadStrategy::AutoThread,
@@ -873,7 +873,7 @@ impl Config {
                 secure_zeroize: false,
                 zeroize: false,
                 argon2_type: Argon2Type::Argon2id,
-                hardware: Hardware::new(),
+                hardware: Hardware::new().set_enable_avx2(false),
             },
             Profile::Secure => Self {
                 thread_strategy: ThreadStrategy::AutoThread,
@@ -911,7 +911,7 @@ impl Config {
                 secure_zeroize: true,
                 zeroize: true,
                 argon2_type: Argon2Type::Argon2id,
-                hardware: Hardware::new(),
+                hardware: Hardware::new().set_enable_avx2(false),
             },
             Profile::Fortress => Self {
                 thread_strategy: ThreadStrategy::FullThread,
@@ -968,7 +968,7 @@ impl Config {
                 secure_zeroize: false,
                 zeroize: false,
                 argon2_type: Argon2Type::Argon2id,
-                hardware: Hardware::new(),
+                hardware: Hardware::new().set_enable_avx2(false),
             },
         }
     }
