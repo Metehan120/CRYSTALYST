@@ -12,6 +12,7 @@
 - [Pre-Release Testing](PRERELEASE-TESTING.md)
 - [Known Issues](KNOWN-ISSUES.md)
 - [Threat Model](THREAT-MODEL.md)
+- [Changelogs](CHANGELOGS.md)
 
 ---
 
