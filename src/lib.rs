@@ -433,7 +433,7 @@ impl Hardware {
             tpm_enabled: true,
             hardware_nonce: true,
             hardware_hashing: false,
-            enable_avx2: true,
+            enable_avx2: false,
         }
     }
 
@@ -657,7 +657,7 @@ impl Default for Config {
             secure_zeroize: false,
             zeroize: false,
             argon2_type: Argon2Type::Argon2id,
-            hardware: Hardware::new().set_enable_avx2(false),
+            hardware: Hardware::new(),
         }
     }
 }
@@ -854,7 +854,7 @@ impl Config {
                 secure_zeroize: false,
                 zeroize: false,
                 argon2_type: Argon2Type::Argon2id,
-                hardware: Hardware::new().set_enable_avx2(false),
+                hardware: Hardware::new(),
             },
             Profile::Balanced => Self {
                 thread_strategy: ThreadStrategy::AutoThread,
@@ -873,7 +873,7 @@ impl Config {
                 secure_zeroize: false,
                 zeroize: false,
                 argon2_type: Argon2Type::Argon2id,
-                hardware: Hardware::new().set_enable_avx2(false),
+                hardware: Hardware::new(),
             },
             Profile::Secure => Self {
                 thread_strategy: ThreadStrategy::AutoThread,
@@ -911,7 +911,7 @@ impl Config {
                 secure_zeroize: true,
                 zeroize: true,
                 argon2_type: Argon2Type::Argon2id,
-                hardware: Hardware::new().set_enable_avx2(false),
+                hardware: Hardware::new(),
             },
             Profile::Fortress => Self {
                 thread_strategy: ThreadStrategy::FullThread,
@@ -930,7 +930,7 @@ impl Config {
                 secure_zeroize: true,
                 zeroize: true,
                 argon2_type: Argon2Type::Argon2id,
-                hardware: Hardware::new().set_enable_avx2(false),
+                hardware: Hardware::new(),
             },
             Profile::Extreme => Self {
                 thread_strategy: ThreadStrategy::FullThread,
@@ -949,7 +949,7 @@ impl Config {
                 secure_zeroize: true,
                 zeroize: true,
                 argon2_type: Argon2Type::Argon2id,
-                hardware: Hardware::new().set_enable_avx2(false),
+                hardware: Hardware::new(),
             },
             Profile::TriangleTestSuite => Self {
                 thread_strategy: ThreadStrategy::AutoThread,
@@ -968,7 +968,7 @@ impl Config {
                 secure_zeroize: false,
                 zeroize: false,
                 argon2_type: Argon2Type::Argon2id,
-                hardware: Hardware::new().set_enable_avx2(false),
+                hardware: Hardware::new(),
             },
         }
     }
@@ -1476,8 +1476,9 @@ fn derive_password_key(
     salt: &[u8],
     custom_salt: Option<Salt>,
     config: Config,
+    needed_len: u64,
 ) -> Result<Vec<u8>, Errors> {
-    if (pwd.len() as u64).ct_lt(&32).unwrap_u8() != 1 {
+    if (pwd.len() as u64).ct_lt(&needed_len).unwrap_u8() != 0 {
         return Err(Errors::Argon2Failed("Invalid Password".to_string()));
     }
 
@@ -1862,7 +1863,7 @@ fn encrypt(
 
     let nonce = nonce.as_bytes();
     let mut pwd = if config.key_derivation {
-        let pwd = derive_password_key(password, nonce, custom_salt, config)?;
+        let pwd = derive_password_key(password, nonce, custom_salt, config, key_len as u64)?;
         pwd
     } else {
         password.to_vec()
@@ -2009,10 +2010,15 @@ fn decrypt(
         (nonce.as_nonce(), Option::from(custom_salt.as_salt()))
     };
 
+    let key_len = match config.key_length {
+        KeyLength::Key256 => 16,
+        KeyLength::Key512 => 32,
+    };
+
     let nonce_byte = nonce_data.as_bytes();
 
     let pwd = if config.key_derivation {
-        let pwd = derive_password_key(password, nonce_byte, custom_salt, config)?;
+        let pwd = derive_password_key(password, nonce_byte, custom_salt, config, key_len)?;
 
         pwd
     } else {
