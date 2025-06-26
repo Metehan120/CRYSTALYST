@@ -674,9 +674,12 @@ pub fn get_chunk_sizes(
     while pos < data_len {
         let size = data_size + (seed[pos % seed.len()] as usize % 16)
             ^ (pos.wrapping_mul(0x9E3779B97F4A7C15));
+        let size = if size == 0 { 1 } else { size % (256 * 256) };
         sizes_table.push(size.min(data_len - pos));
 
-        pos += size % 256 * 256;
+        println!("{}", size);
+
+        pos += size;
     }
 
     Ok(sizes_table)
