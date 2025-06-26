@@ -1477,7 +1477,7 @@ fn derive_password_key(
     custom_salt: Option<Salt>,
     config: Config,
 ) -> Result<Vec<u8>, Errors> {
-    if pwd.len().ct_eq(&32).unwrap_u8() != 1 {
+    if (pwd.len() as u64).ct_lt(&32).unwrap_u8() != 1 {
         return Err(Errors::Argon2Failed("Invalid Password".to_string()));
     }
 
