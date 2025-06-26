@@ -1900,8 +1900,11 @@ fn encrypt(
 
     shift_rows(&mut gf_data, &config);
 
-    let final_sbox_data = s_bytes(&mut gf_data, nonce, &pwd, config)?;
+    let mut shifted_data = dynamic_shift(&mut gf_data, nonce, &pwd, config)?;
     secure_zeroize(&mut gf_data, &config);
+
+    let final_sbox_data = s_bytes(&mut shifted_data, nonce, &pwd, config)?;
+    secure_zeroize(&mut shifted_data, &config);
 
     let mut crypted = Vec::new();
     let mut round_data = final_sbox_data;
@@ -1948,7 +1951,7 @@ fn encrypt(
         }
     }
 
-    if config.ctr_layer {
+    if config.ctr_layer && crypted.len() > 128 {
         let mut iv = [0u8; 64];
         iv.clone_from_slice(&crypted[0..64]);
         ctr_encrypt(nonce, &mut crypted[64..], &iv);
@@ -2068,7 +2071,7 @@ fn decrypt(
     hash_data.update(&crypted);
     let mac_data_1 = hash_data.finalize().to_vec();
 
-    if config.ctr_layer {
+    if config.ctr_layer && data.len() > 128 {
         inverse_shift_rows(&mut crypted[..64], &config);
         let mut iv = [0u8; 64];
         iv.clone_from_slice(&crypted[0..64]);
@@ -2119,10 +2122,13 @@ fn decrypt(
     let mut pre_sbox_data = in_s_bytes(&mut round_data, nonce_byte, &pwd, config)?;
     secure_zeroize(&mut round_data, &config);
 
-    inverse_shift_rows(&mut pre_sbox_data, &config);
-
-    let mut ungf_data = apply_gf(&mut pre_sbox_data, &config, &gf, nonce_byte)?;
+    let mut unshifted_data = dynamic_unshift(&mut pre_sbox_data, nonce_byte, &pwd, config)?;
     secure_zeroize(&mut pre_sbox_data, &config);
+
+    inverse_shift_rows(&mut unshifted_data, &config);
+
+    let mut ungf_data = apply_gf(&mut unshifted_data, &config, &gf, nonce_byte)?;
+    secure_zeroize(&mut unshifted_data, &config);
 
     let mut rxa_unmixed = rxa_decrypt(&pwd, &mut ungf_data, config)?;
     secure_zeroize(&mut ungf_data, &config);
