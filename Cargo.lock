@@ -140,7 +140,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "crystalyst"
+name = "crystalyst-rs"
 version = "0.8.0"
 dependencies = [
  "argon2",

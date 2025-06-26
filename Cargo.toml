@@ -1,5 +1,5 @@
 [package]
-name = "crystalyst"
+name = "crystalyst-rs"
 version = "0.8.0"
 edition = "2024"
 description = "A modern, flexible and 'EXPERIMENTAL' cryptographic library for Rust"
