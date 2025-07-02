@@ -1,4 +1,4 @@
-# CRYSTALYST Pre-Release Testing Checklist (v0.8.0)
+# CRYSTALYST Pre-Release Testing Checklist (v0.9.0)
 
 This document outlines all critical testing procedures that must be completed before publishing a new version of CRYSTALYST.
 

@@ -1,7 +1,7 @@
 /*! # CRYSTALYST – High-Performance Encryption
-[![Crates.io](https://img.shields.io/crates/v/atomcrypte)](https://crates.io/crates/atomcrypte)
-[![Downloads](https://img.shields.io/crates/d/atomcrypte)](https://crates.io/crates/atomcrypte)
-[![License](https://img.shields.io/crates/l/atomcrypte)](LICENSE)
+[![Crates.io](https://img.shields.io/crates/v/crystalyst-rs)](https://crates.io/crates/crystalyst-rs)
+[![Downloads](https://img.shields.io/crates/d/crystalyst-rs)](https://crates.io/crates/crystalyst-rs)
+[![License](https://img.shields.io/crates/l/crystalyst-rs)](LICENSE)
 
 
 > Latest Version: 0.8.0 - "When Things Get Real", [Changelogs](CHANGELOGS.md)
@@ -246,40 +246,82 @@ Licensed under the [MIT license](LICENSE).
 Developed by **Metehan Eyyub Zaferoğlu**
 Contact: [metehanzafer@proton.me](mailto:metehanzafer@proton.me) !*/
 
+#[cfg(feature = "key_derivation")]
 use argon2::{Algorithm, Argon2, Params, Version};
-use base64::{Engine, prelude::BASE64_STANDARD};
-use engine::engine::*;
 use hmac::Hmac;
 use hmac::Mac;
 use rand::thread_rng;
-use rand::{Rng, RngCore, rngs::OsRng};
-use rayon::prelude::*;
-use sha3::{Digest, Sha3_256, Sha3_512};
-use std::sync::Arc;
-use std::time::Instant;
-use subtle::{ConstantTimeEq, ConstantTimeLess};
+use secrecy::{ExposeSecret, SecretBox};
+use sha3::Sha3_512;
+#[cfg(feature = "key_derivation")]
+use subtle::ConstantTimeLess;
 use sysinfo::System;
 use thiserror::Error;
 use tss_esapi::interface_types::resource_handles::Hierarchy;
 use tss_esapi::structures::MaxBuffer;
 use tss_esapi::tcti_ldr::DeviceConfig;
 use zeroize::Zeroize;
+
+use crate::rng_utils::nonce::NonceData;
+#[cfg(feature = "key_derivation")]
+use crate::rng_utils::salt::Salt;
+#[cfg(feature = "machine_rng")]
+use crate::utils::base_utils::AsBase;
+
+/// Ciphers; Blocker Cipher, Stream Cipher
+pub mod cipher;
 mod engine;
-pub mod kyber;
+/// Utils such as RNG, Nonce, Salt...
+pub mod rng_utils;
+/// Utils such as RNG, Kyber...
+pub mod utils;
 
-static VERSION: &[u8] = b"CRYSTALYST-version:0x8";
+pub mod profiles {
+    use super::*;
 
-/// Represents different types of nonces used in the encryption process.
-/// - TaggedNonce: Nonce combined with a user-provided tag
-/// - HashedNonce: Cryptographically hashed nonce for extra randomness
-/// - Nonce: Standard cryptographically secure random nonce
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum NonceData {
-    TaggedNonce([u8; 32]),
-    HashedNonce([u8; 32]),
-    Nonce([u8; 32]),
-    MachineNonce([u8; 32]),
-} // Multiple data types for future usage
+    pub const DEFAULT: Config = Config::DEFAULT;
+    /// Constant Time Default Profile
+    pub const CT_DEFAULT: Config = Config::CT_DEFAULT;
+    pub const FAST: Config = Config::FAST;
+    pub const BALANCED: Config = Config::BALANCED;
+    pub const SECURE: Config = Config::SECURE;
+    /// Constant Time Secure Profile
+    pub const CT_SECURE: Config = Config::CT_SECURE;
+    pub const MAX: Config = Config::MAX;
+    pub const FORTRESS: Config = Config::FORTRESS;
+    pub const EXTREME: Config = Config::EXTREME;
+    pub const REALTIME: Config = Config::REALTIME;
+    /// Constant Time Realtime Profile
+    pub const CT_REALTIME: Config = Config::CT_REALTIME;
+}
+
+pub struct KeyBuffer(SecretBox<[u8]>);
+
+impl KeyBuffer {
+    pub fn new(key: Vec<u8>) -> Self {
+        KeyBuffer(SecretBox::new(key.into_boxed_slice()))
+    }
+
+    pub fn expose_secret(&self) -> &[u8] {
+        &self.0.expose_secret()
+    }
+}
+
+pub struct RoundKeyBuffer(Vec<u8>);
+
+impl RoundKeyBuffer {
+    pub fn new(key: Vec<u8>) -> Self {
+        RoundKeyBuffer(key)
+    }
+}
+
+impl Drop for RoundKeyBuffer {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+static VERSION: &[u8] = b"CRYSTALYST-version:0x9";
 
 /// Represents different types of errors that can occur during encryption or decryption.
 /// - This enum provides a comprehensive set of error types that can be encountered
@@ -333,7 +375,7 @@ pub enum Errors {
     InverseError(String),
     #[error("Chunk Error: {0}")]
     ChunkError(String),
-    #[error("CRYSTALYST is not backward compatible with AtomCrypte")]
+    #[error("CRYSTALYST is not backward compatible with CRYSTALYST 0.8.0")]
     NotBackwardCompatible,
     #[error("Kyber Error: {0}")]
     KyberError(String),
@@ -359,10 +401,10 @@ impl IrreduciblePoly {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyLength {
-    Key256,
     Key512,
 }
 
+#[cfg(feature = "key_derivation")]
 /// Represents different types of Argon2 variants that can be used for password hashing.
 /// # ⚠️ CRITICAL CONFIGURATION - DO NOT MODIFY
 ///
@@ -425,17 +467,20 @@ pub struct Hardware {
     pub hardware_hashing: bool,
     /// Enable AVX2 usage
     pub enable_avx2: bool,
+    /// Warm up Cache
+    /// # PROVIDING RESISTANCE AGAINST SIDE-CHANNEL ATTACKS
+    /// # ⚠️⚠️⚠️ DO NOT DISABLE THIS OPTION UNLESS YOU KNOW WHAT YOU ARE DOING ⚠️⚠️⚠️
+    pub warmup_cache: bool,
 }
 
 impl Hardware {
-    pub fn new() -> Self {
-        Hardware {
-            tpm_enabled: true,
-            hardware_nonce: true,
-            hardware_hashing: false,
-            enable_avx2: false,
-        }
-    }
+    pub const DEFAULT: Hardware = Hardware {
+        tpm_enabled: true,
+        hardware_nonce: true,
+        hardware_hashing: false,
+        enable_avx2: false,
+        warmup_cache: true,
+    };
 
     pub fn set_tpm_enabled(mut self, tpm_enabled: bool) -> Self {
         self.tpm_enabled = tpm_enabled;
@@ -456,9 +501,17 @@ impl Hardware {
         self.enable_avx2 = enable_avx2;
         self
     }
+
+    /// # PROVIDING RESISTANCE AGAINST SIDE-CHANNEL ATTACKS
+    /// # ⚠️⚠️⚠️ DO NOT DISABLE THIS OPTION UNLESS YOU KNOW WHAT YOU ARE DOING ⚠️⚠️⚠️
+    pub fn warmup_cache(mut self, warmup_cache: bool) -> Self {
+        self.warmup_cache = warmup_cache;
+        self
+    }
 }
 
 /// Configuration for CRYSTALYST encryption/decryption operations.
+/// # If you want Real CT protection, use single thread.
 ///
 /// # Security Profiles
 /// Use `Config::from_profile()` for predefined security levels, or customize individual options.
@@ -506,25 +559,18 @@ pub struct Config {
     /// Generate dummy data for side-channel resistance
     pub dummy_data: bool,
 
-    /// Use constant-time S-box operations. Provides timing attack resistance
-    /// at ~7x performance cost. Recommended for high-security environments.
-    pub constant_time_sbox: bool,
+    pub dummy_data_size: usize,
 
-    /// Use constant-time key lookup operations. Provides timing attack resistance
-    /// at ~7-20x performance cost. Recommended for high-security environments.
-    pub constant_time_key_lookup: bool,
+    /// Provides timing attack resistance
+    /// Recommended for high-security environments
+    pub subtle_sbox: bool,
+
+    /// Provides timing attack resistance
+    /// Recommended for high-security environments
+    pub subtle_key_lookup: bool,
 
     /// TPM hardware support
     pub hardware: Hardware,
-
-    /// # ⚠️ EXTREMELY EXPENSIVE – DO NOT ENABLE UNLESS YOU KNOW WHAT YOU'RE DOING
-    /// # ⚠️ ~65,000 CPU CYCLES PER SINGLE GALOIS FIELD OPERATION
-    ///
-    /// Use constant-time Galois field operations. Provides timing attack resistance
-    /// at ~1000-2000 performance cost. Recommended for high-security environments.
-    ///
-    /// ⚠️ **Warning**: This flag should NOT be enabled unless required by a strict threat model.
-    pub constant_time_galois_field: bool,
 
     /// Can affect performance.
     /// Adds more security.
@@ -534,7 +580,7 @@ pub struct Config {
     /// Adds more security.
     pub ctr_layer: bool,
 
-    /// 🆕 NEW: Enable/disable key derivation
+    #[cfg(feature = "key_derivation")]
     /// When false: uses password directly (FAST but INSECURE for weak passwords)
     /// When true: uses Argon2 + BLAKE3 derivation (SECURE but slower)
     pub key_derivation: bool,
@@ -544,6 +590,7 @@ pub struct Config {
 
     pub zeroize: bool,
 
+    #[cfg(feature = "key_derivation")]
     /// # ⚠️ CRITICAL CONFIGURATION - DO NOT MODIFY
     ///
     /// Changing this value will make ALL existing encrypted data
@@ -559,42 +606,6 @@ pub struct Config {
     /// - Performing planned migration with data conversion
     /// - You have cryptographic expertise
     pub argon2_type: Argon2Type,
-}
-
-/// Profile for the encryption and decryption process.
-/// - `extreme`: Extreme security level.
-/// - `fortress`: Maximum security level, can be good against any attacks.
-/// - `max`: Maximum security level, can be good against most attacks.
-/// - `secure`: Secure security level.
-/// - `balanced`: Balanced security level.
-/// - `fast`: Fast security level.
-///
-/// Profile::Extreme - MAXIMUM SECURITY
-///
-/// ⚠️ WARNING: EXTREMELY SLOW! ⚠️
-///
-/// Performance: ~500 bytes/second
-/// Use only when:
-/// - Data value > time cost
-/// - Maximum security required
-/// - Side-channel attacks likely
-/// - No performance requirements
-///
-/// Features:
-/// - Constant-time operations
-/// - 10 encryption rounds
-/// - 512-bit keys
-/// - No hardware dependencies
-/// - Maximum memory protection
-#[derive(Debug, Clone, Copy)]
-pub enum Profile {
-    Extreme,
-    Fortress,
-    Max,
-    Secure,
-    Balanced,
-    Fast,
-    TriangleTestSuite,
 }
 
 impl ThreadStrategy {
@@ -637,32 +648,290 @@ impl ThreadStrategy {
     }
 }
 
-impl Default for Config {
-    /// Default configuration for the encryption and decryption process.
-    fn default() -> Self {
-        Self {
-            thread_strategy: ThreadStrategy::AutoThread,
-            stack_size: 64 * 1024 * 1024,
-            gf_poly: IrreduciblePoly::AES,
-            gf_type: GaloisFieldType::AES,
-            rounds: 2,
-            key_length: KeyLength::Key512,
-            dummy_data: true,
-            multi_round_galois_field: true,
-            ctr_layer: true,
-            constant_time_sbox: false,
-            constant_time_key_lookup: false,
-            constant_time_galois_field: false,
-            key_derivation: true,
-            secure_zeroize: false,
-            zeroize: false,
-            argon2_type: Argon2Type::Argon2id,
-            hardware: Hardware::new(),
-        }
-    }
-}
-
 impl Config {
+    pub const DEFAULT: Config = Config {
+        thread_strategy: ThreadStrategy::AutoThread,
+        stack_size: 16 * 1024 * 1024,
+        gf_poly: IrreduciblePoly::AES,
+        gf_type: GaloisFieldType::AES,
+        rounds: 2,
+        key_length: KeyLength::Key512,
+        dummy_data: true,
+        dummy_data_size: 1024 * 10,
+        multi_round_galois_field: true,
+        ctr_layer: true,
+        subtle_sbox: false,
+        subtle_key_lookup: false,
+        #[cfg(feature = "key_derivation")]
+        key_derivation: true,
+        secure_zeroize: false,
+        zeroize: false,
+        #[cfg(feature = "key_derivation")]
+        argon2_type: Argon2Type::Argon2id,
+        hardware: Hardware::DEFAULT,
+    };
+
+    /// Default configuration for constant-time operations.
+    ///
+    /// # Details
+    /// - This configuration is optimized for constant-time operations and is suitable for use in security-sensitive contexts.
+    /// - It is recommended to use this configuration when performing cryptographic operations that require constant-time execution.
+    /// - AVX2 can be enabled if needed.
+    pub const CT_DEFAULT: Config = Config {
+        thread_strategy: ThreadStrategy::SingleThread,
+        stack_size: 16 * 1024 * 1024,
+        gf_poly: IrreduciblePoly::AES,
+        gf_type: GaloisFieldType::AES,
+        rounds: 2,
+        key_length: KeyLength::Key512,
+        dummy_data: true,
+        dummy_data_size: 1024 * 10,
+        multi_round_galois_field: true,
+        ctr_layer: true,
+        subtle_sbox: false,
+        subtle_key_lookup: false,
+        #[cfg(feature = "key_derivation")]
+        key_derivation: true,
+        secure_zeroize: false,
+        zeroize: false,
+        #[cfg(feature = "key_derivation")]
+        argon2_type: Argon2Type::Argon2id,
+        hardware: Hardware::DEFAULT,
+    };
+
+    pub const FAST: Config = Config {
+        thread_strategy: ThreadStrategy::FullThread,
+        stack_size: 16 * 1024 * 1024,
+        gf_poly: IrreduciblePoly::AES,
+        gf_type: GaloisFieldType::AES,
+        rounds: 1,
+        key_length: KeyLength::Key512,
+        dummy_data: true,
+        dummy_data_size: 1024 * 10,
+        multi_round_galois_field: false,
+        ctr_layer: true,
+        subtle_sbox: false,
+        subtle_key_lookup: false,
+        #[cfg(feature = "key_derivation")]
+        key_derivation: true,
+        secure_zeroize: false,
+        zeroize: false,
+        #[cfg(feature = "key_derivation")]
+        argon2_type: Argon2Type::Argon2id,
+        hardware: Hardware::DEFAULT,
+    };
+
+    pub const BALANCED: Config = Config {
+        thread_strategy: ThreadStrategy::AutoThread,
+        stack_size: 16 * 1024 * 1024,
+        gf_poly: IrreduciblePoly::AES,
+        gf_type: GaloisFieldType::AES,
+        rounds: 2,
+        key_length: KeyLength::Key512,
+        dummy_data: true,
+        dummy_data_size: 1024 * 10,
+        multi_round_galois_field: true,
+        ctr_layer: true,
+        subtle_sbox: false,
+        subtle_key_lookup: false,
+        #[cfg(feature = "key_derivation")]
+        key_derivation: true,
+        secure_zeroize: false,
+        zeroize: false,
+        #[cfg(feature = "key_derivation")]
+        argon2_type: Argon2Type::Argon2id,
+        hardware: Hardware::DEFAULT,
+    };
+
+    pub const SECURE: Config = Config {
+        thread_strategy: ThreadStrategy::AutoThread,
+        stack_size: 16 * 1024 * 1024,
+        gf_poly: IrreduciblePoly::AES,
+        gf_type: GaloisFieldType::AES,
+        rounds: 2,
+        key_length: KeyLength::Key512,
+        dummy_data: true,
+        dummy_data_size: 1024 * 20,
+        multi_round_galois_field: true,
+        ctr_layer: true,
+        subtle_sbox: false,
+        subtle_key_lookup: false,
+        #[cfg(feature = "key_derivation")]
+        key_derivation: true,
+        secure_zeroize: false,
+        zeroize: true,
+        #[cfg(feature = "key_derivation")]
+        argon2_type: Argon2Type::Argon2id,
+        hardware: Hardware::DEFAULT,
+    };
+
+    /// Constant time implementation of Secure profile.
+    ///
+    /// This configuration is optimized for constant time execution and is suitable for secure applications.
+    pub const CT_SECURE: Config = Config {
+        thread_strategy: ThreadStrategy::SingleThread,
+        stack_size: 16 * 1024 * 1024,
+        gf_poly: IrreduciblePoly::AES,
+        gf_type: GaloisFieldType::AES,
+        rounds: 2,
+        key_length: KeyLength::Key512,
+        dummy_data: true,
+        dummy_data_size: 1024 * 20,
+        multi_round_galois_field: true,
+        ctr_layer: true,
+        subtle_sbox: false,
+        subtle_key_lookup: false,
+        #[cfg(feature = "key_derivation")]
+        key_derivation: true,
+        secure_zeroize: false,
+        zeroize: true,
+        #[cfg(feature = "key_derivation")]
+        argon2_type: Argon2Type::Argon2id,
+        hardware: Hardware::DEFAULT,
+    };
+
+    /// Constant time by default.
+    pub const MAX: Config = Config {
+        thread_strategy: ThreadStrategy::SingleThread,
+        stack_size: 16 * 1024 * 1024,
+        gf_poly: IrreduciblePoly::AES,
+        gf_type: GaloisFieldType::AES,
+        rounds: 4,
+        key_length: KeyLength::Key512,
+        dummy_data: true,
+        dummy_data_size: 1024 * 50,
+        multi_round_galois_field: true,
+        ctr_layer: true,
+        subtle_sbox: false,
+        subtle_key_lookup: false,
+        #[cfg(feature = "key_derivation")]
+        key_derivation: true,
+        secure_zeroize: true,
+        zeroize: true,
+        #[cfg(feature = "key_derivation")]
+        argon2_type: Argon2Type::Argon2id,
+        hardware: Hardware::DEFAULT,
+    };
+
+    /// Constant time by default.
+    pub const FORTRESS: Config = Config {
+        thread_strategy: ThreadStrategy::SingleThread,
+        stack_size: 32 * 1024 * 1024,
+        gf_poly: IrreduciblePoly::AES,
+        gf_type: GaloisFieldType::AES,
+        rounds: 10,
+        key_length: KeyLength::Key512,
+        dummy_data: true,
+        dummy_data_size: 1024 * 100,
+        multi_round_galois_field: true,
+        ctr_layer: true,
+        subtle_sbox: true,
+        subtle_key_lookup: false,
+        #[cfg(feature = "key_derivation")]
+        key_derivation: true,
+        secure_zeroize: true,
+        zeroize: true,
+        #[cfg(feature = "key_derivation")]
+        argon2_type: Argon2Type::Argon2id,
+        hardware: Hardware::DEFAULT,
+    };
+
+    /// Constant time by default.
+    pub const EXTREME: Config = Config {
+        thread_strategy: ThreadStrategy::SingleThread,
+        stack_size: 32 * 1024 * 1024,
+        gf_poly: IrreduciblePoly::AES,
+        gf_type: GaloisFieldType::AES,
+        rounds: 10,
+        key_length: KeyLength::Key512,
+        dummy_data: true,
+        dummy_data_size: 1024 * 1024,
+        multi_round_galois_field: true,
+        ctr_layer: true,
+        subtle_sbox: true,
+        subtle_key_lookup: true,
+        #[cfg(feature = "key_derivation")]
+        key_derivation: true,
+        secure_zeroize: true,
+        zeroize: true,
+        #[cfg(feature = "key_derivation")]
+        argon2_type: Argon2Type::Argon2id,
+        hardware: Hardware::DEFAULT,
+    };
+
+    pub const TRIANGLE_TEST_SUITE: Config = Config {
+        thread_strategy: ThreadStrategy::AutoThread,
+        stack_size: 16 * 1024 * 1024,
+        gf_poly: IrreduciblePoly::Conway,
+        gf_type: GaloisFieldType::Triangular,
+        rounds: 2,
+        key_length: KeyLength::Key512,
+        dummy_data: true,
+        dummy_data_size: 1024 * 10,
+        multi_round_galois_field: true,
+        ctr_layer: false,
+        subtle_sbox: false,
+        subtle_key_lookup: false,
+        #[cfg(feature = "key_derivation")]
+        key_derivation: true,
+        secure_zeroize: false,
+        zeroize: false,
+        #[cfg(feature = "key_derivation")]
+        argon2_type: Argon2Type::Argon2id,
+        hardware: Hardware::DEFAULT,
+    };
+
+    /// Config for realtime encryption and decryption.
+    /// Key derivation disabled by default.
+    pub const REALTIME: Config = Config {
+        thread_strategy: ThreadStrategy::BulkOperations,
+        stack_size: 16 * 1024 * 1024,
+        gf_poly: IrreduciblePoly::AES,
+        gf_type: GaloisFieldType::AES,
+        rounds: 1,
+        key_length: KeyLength::Key512,
+        dummy_data: true,
+        dummy_data_size: 1024 * 25,
+        multi_round_galois_field: false,
+        ctr_layer: true,
+        subtle_sbox: false,
+        subtle_key_lookup: false,
+        #[cfg(feature = "key_derivation")]
+        key_derivation: false,
+        secure_zeroize: false,
+        zeroize: false,
+        #[cfg(feature = "key_derivation")]
+        argon2_type: Argon2Type::Argon2id,
+        hardware: Hardware::DEFAULT,
+    };
+
+    /// Optimized for constant time operations.
+    ///
+    /// # Details
+    /// - This configuration is optimized for constant time operations, which is important for security-sensitive applications.
+    /// - AVX2 can be enabled if needed.
+    pub const CT_REALTIME: Config = Config {
+        thread_strategy: ThreadStrategy::SingleThread,
+        stack_size: 16 * 1024 * 1024,
+        gf_poly: IrreduciblePoly::AES,
+        gf_type: GaloisFieldType::AES,
+        rounds: 1,
+        key_length: KeyLength::Key512,
+        dummy_data: true,
+        dummy_data_size: 1024 * 25,
+        multi_round_galois_field: false,
+        ctr_layer: true,
+        subtle_sbox: false,
+        subtle_key_lookup: false,
+        #[cfg(feature = "key_derivation")]
+        key_derivation: false,
+        secure_zeroize: false,
+        zeroize: false,
+        #[cfg(feature = "key_derivation")]
+        argon2_type: Argon2Type::Argon2id,
+        hardware: Hardware::DEFAULT,
+    };
+
     /// Sets the number of threads to use for encryption and decryption.
     /// - Not recommended changing the number of threads after initialization.
     pub fn set_thread(mut self, strategy: ThreadStrategy) -> Self {
@@ -715,15 +984,15 @@ impl Config {
 
     /// Sets the constant time sbox.
     /// Recommended constant time sbox for security.
-    pub fn constant_time_sbox(mut self, constant_time_sbox: bool) -> Self {
-        self.constant_time_sbox = constant_time_sbox;
+    pub fn subtle_sbox(mut self, constant_time_sbox: bool) -> Self {
+        self.subtle_sbox = constant_time_sbox;
         self
     }
 
     /// Sets the constant time key lookup.
     /// Recommended constant time key lookup for security.
-    pub fn constant_time_key_lookup(mut self, constant_time_key_lookup: bool) -> Self {
-        self.constant_time_key_lookup = constant_time_key_lookup;
+    pub fn subtle_key_lookup(mut self, constant_time_key_lookup: bool) -> Self {
+        self.subtle_key_lookup = constant_time_key_lookup;
         self
     }
 
@@ -745,29 +1014,17 @@ impl Config {
     /// ```
     pub fn complexity(self, level: u8) -> Self {
         match level {
-            0..=1 => Self::from_profile(Profile::Fast),
-            2..=3 => Self::from_profile(Profile::Balanced),
-            4..=5 => Self::from_profile(Profile::Secure),
-            6..=7 => Self::from_profile(Profile::Max),
-            8..=10 => Self::from_profile(Profile::Fortress),
-            _ => Self::from_profile(Profile::Fortress),
+            0..=1 => Self::FAST,
+            2..=3 => Self::BALANCED,
+            4..=5 => Self::SECURE,
+            6..=7 => Self::MAX,
+            8..=10 => Self::FORTRESS,
+            _ => Self::FORTRESS,
         }
     }
 
     pub fn set_hardware(mut self, hardware: Hardware) -> Self {
         self.hardware = hardware;
-        self
-    }
-
-    /// # ⚠️ EXTREMELY EXPENSIVE – DO NOT ENABLE UNLESS YOU KNOW WHAT YOU'RE DOING
-    /// # ⚠️ ~65,000 CPU CYCLES PER SINGLE GALOIS FIELD OPERATION
-    ///
-    /// Use constant-time Galois field operations. Provides timing attack resistance
-    /// at ~1000-2000 performance cost. Recommended for high-security environments.
-    ///
-    /// ⚠️ **Warning**: This flag should NOT be enabled unless required by a strict threat model.
-    pub fn constant_time_galois_field(mut self, constant_time_galois_field: bool) -> Self {
-        self.constant_time_galois_field = constant_time_galois_field;
         self
     }
 
@@ -795,6 +1052,7 @@ impl Config {
         self
     }
 
+    #[cfg(feature = "key_derivation")]
     /// Enable/disable key derivation
     /// When false: uses password directly (FAST but INSECURE for weak passwords)
     /// When true: uses Argon2 + BLAKE3 derivation (SECURE but slower)
@@ -815,6 +1073,7 @@ impl Config {
         self
     }
 
+    #[cfg(feature = "key_derivation")]
     /// # ⚠️ CRITICAL CONFIGURATION - DO NOT MODIFY
     ///
     /// Changing this value will make ALL existing encrypted data
@@ -832,145 +1091,6 @@ impl Config {
     pub fn argon2_type(mut self, argon2_type: Argon2Type) -> Self {
         self.argon2_type = argon2_type;
         self
-    }
-
-    /// Create a configuration from a profile
-    pub fn from_profile(profile: Profile) -> Self {
-        match profile {
-            Profile::Fast => Self {
-                thread_strategy: ThreadStrategy::FullThread,
-                stack_size: 64 * 1024 * 1024,
-                gf_poly: IrreduciblePoly::AES,
-                gf_type: GaloisFieldType::AES,
-                rounds: 1,
-                key_length: KeyLength::Key256,
-                dummy_data: true,
-                multi_round_galois_field: false,
-                ctr_layer: true,
-                constant_time_sbox: false,
-                constant_time_key_lookup: false,
-                constant_time_galois_field: false,
-                key_derivation: true,
-                secure_zeroize: false,
-                zeroize: false,
-                argon2_type: Argon2Type::Argon2id,
-                hardware: Hardware::new(),
-            },
-            Profile::Balanced => Self {
-                thread_strategy: ThreadStrategy::AutoThread,
-                stack_size: 64 * 1024 * 1024,
-                gf_poly: IrreduciblePoly::AES,
-                gf_type: GaloisFieldType::AES,
-                rounds: 2,
-                key_length: KeyLength::Key512,
-                dummy_data: true,
-                multi_round_galois_field: true,
-                ctr_layer: true,
-                constant_time_sbox: false,
-                constant_time_key_lookup: false,
-                constant_time_galois_field: false,
-                key_derivation: true,
-                secure_zeroize: false,
-                zeroize: false,
-                argon2_type: Argon2Type::Argon2id,
-                hardware: Hardware::new(),
-            },
-            Profile::Secure => Self {
-                thread_strategy: ThreadStrategy::AutoThread,
-                stack_size: 64 * 1024 * 1024,
-                gf_poly: IrreduciblePoly::AES,
-                gf_type: GaloisFieldType::AES,
-                rounds: 2,
-                key_length: KeyLength::Key512,
-                dummy_data: true,
-                multi_round_galois_field: true,
-                ctr_layer: true,
-                constant_time_sbox: false,
-                constant_time_key_lookup: false,
-                constant_time_galois_field: false,
-                key_derivation: true,
-                secure_zeroize: false,
-                zeroize: true,
-                argon2_type: Argon2Type::Argon2id,
-                hardware: Hardware::new(),
-            },
-            Profile::Max => Self {
-                thread_strategy: ThreadStrategy::AutoThread,
-                stack_size: 128 * 1024 * 1024,
-                gf_poly: IrreduciblePoly::AES,
-                gf_type: GaloisFieldType::AES,
-                rounds: 4,
-                key_length: KeyLength::Key512,
-                dummy_data: true,
-                multi_round_galois_field: true,
-                ctr_layer: true,
-                constant_time_sbox: true,
-                constant_time_key_lookup: false,
-                constant_time_galois_field: false,
-                key_derivation: true,
-                secure_zeroize: true,
-                zeroize: true,
-                argon2_type: Argon2Type::Argon2id,
-                hardware: Hardware::new(),
-            },
-            Profile::Fortress => Self {
-                thread_strategy: ThreadStrategy::FullThread,
-                stack_size: 128 * 1024 * 1024,
-                gf_poly: IrreduciblePoly::AES,
-                gf_type: GaloisFieldType::AES,
-                rounds: 10,
-                key_length: KeyLength::Key512,
-                dummy_data: true,
-                multi_round_galois_field: true,
-                ctr_layer: true,
-                constant_time_sbox: true,
-                constant_time_key_lookup: true,
-                constant_time_galois_field: false,
-                key_derivation: true,
-                secure_zeroize: true,
-                zeroize: true,
-                argon2_type: Argon2Type::Argon2id,
-                hardware: Hardware::new(),
-            },
-            Profile::Extreme => Self {
-                thread_strategy: ThreadStrategy::FullThread,
-                stack_size: 128 * 1024 * 1024,
-                gf_poly: IrreduciblePoly::AES,
-                gf_type: GaloisFieldType::AES,
-                rounds: 10,
-                key_length: KeyLength::Key512,
-                dummy_data: true,
-                multi_round_galois_field: true,
-                ctr_layer: true,
-                constant_time_sbox: true,
-                constant_time_key_lookup: true,
-                constant_time_galois_field: true,
-                key_derivation: true,
-                secure_zeroize: true,
-                zeroize: true,
-                argon2_type: Argon2Type::Argon2id,
-                hardware: Hardware::new(),
-            },
-            Profile::TriangleTestSuite => Self {
-                thread_strategy: ThreadStrategy::AutoThread,
-                stack_size: 64 * 1024 * 1024,
-                gf_poly: IrreduciblePoly::Conway,
-                gf_type: GaloisFieldType::Triangular,
-                rounds: 2,
-                key_length: KeyLength::Key512,
-                dummy_data: true,
-                multi_round_galois_field: true,
-                ctr_layer: false,
-                constant_time_sbox: false,
-                constant_time_key_lookup: false,
-                constant_time_galois_field: false,
-                key_derivation: true,
-                secure_zeroize: false,
-                zeroize: false,
-                argon2_type: Argon2Type::Argon2id,
-                hardware: Hardware::new(),
-            },
-        }
     }
 }
 
@@ -1035,442 +1155,9 @@ impl TpmModule {
     }
 }
 
-impl NonceData {
-    /// Converts the nonce data into a byte array.
-    pub fn as_bytes(&self) -> &[u8; 32] {
-        match self {
-            NonceData::Nonce(n)
-            | NonceData::HashedNonce(n)
-            | NonceData::TaggedNonce(n)
-            | NonceData::MachineNonce(n) => n,
-        }
-    }
-    /// Converts the nonce data into a vector of bytes.
-    pub fn to_vec(&self) -> Vec<u8> {
-        match self {
-            NonceData::Nonce(n)
-            | NonceData::HashedNonce(n)
-            | NonceData::TaggedNonce(n)
-            | NonceData::MachineNonce(n) => n.to_vec(),
-        }
-    }
-}
-
-/// Converts bytes or vector of bytes into a NonceData.
-pub trait AsNonce {
-    fn as_nonce(&self) -> NonceData;
-    fn as_nonce_safe(&self) -> Result<NonceData, String>;
-}
-
-fn slice_to_nonce(input: &[u8]) -> Result<NonceData, String> {
-    if input.len() != 32 {
-        Err("Nonce length must be 32 bytes".to_string())
-    } else {
-        let mut arr = [0u8; 32];
-        arr.copy_from_slice(input);
-        Ok(NonceData::Nonce(arr))
-    }
-}
-
-/// Converts the bytes into a nonce data.
-impl AsNonce for [u8] {
-    fn as_nonce(&self) -> NonceData {
-        slice_to_nonce(self).expect("Nonce length must be 32 bytes")
-    }
-
-    fn as_nonce_safe(&self) -> Result<NonceData, String> {
-        slice_to_nonce(self)
-    }
-}
-
-/// Converts the bytes vector into a nonce data.
-impl AsNonce for Vec<u8> {
-    fn as_nonce(&self) -> NonceData {
-        slice_to_nonce(self).expect("Nonce length must be 32 bytes")
-    }
-
-    fn as_nonce_safe(&self) -> Result<NonceData, String> {
-        slice_to_nonce(self)
-    }
-}
-
-/// Generates a random nonce using the operating system's random number generator.
-pub enum RNG {
-    OsRngNonce([u8; 32]),
-    TaggedOsRngNonce([u8; 32]),
-    ThreadRngNonce([u8; 32]),
-}
-
-impl RNG {
-    /// Generates a random nonce using the machine's random number generator.
-    pub fn thread_rng() -> Self {
-        let mut nonce = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut nonce);
-        Self::ThreadRngNonce(nonce)
-    }
-
-    /// Generates a random nonce using the operating system's random number generator.
-    pub fn osrng() -> Self {
-        let mut nonce = [0u8; 32];
-        OsRng
-            .try_fill_bytes(&mut nonce)
-            .expect("Nonce generation failed");
-        Self::OsRngNonce(nonce)
-    }
-
-    /// Generates a random nonce using the operating system's random number generator, with a tag.
-    pub fn tagged_osrng(tag: &[u8]) -> Self {
-        let mut nonce = [0u8; 32];
-        OsRng
-            .try_fill_bytes(&mut nonce)
-            .expect("Nonce generation failed");
-
-        let new_nonce: Vec<u8> = nonce
-            .iter()
-            .enumerate()
-            .map(|(i, b)| b.wrapping_add(tag[i % tag.len()] ^ i as u8))
-            .collect();
-
-        let mut final_nonce = [0u8; 32];
-        final_nonce.copy_from_slice(&new_nonce[..32]);
-
-        Self::TaggedOsRngNonce(final_nonce)
-    }
-
-    /// Returns the RNG as a byte slice.
-    pub fn as_bytes(&self) -> &[u8; 32] {
-        match &self {
-            Self::OsRngNonce(a) | Self::TaggedOsRngNonce(a) | Self::ThreadRngNonce(a) => a,
-        }
-    }
-
-    /// Returns the RNG as a vector of bytes.
-    pub fn to_vec(&self) -> Vec<u8> {
-        self.as_bytes().to_vec()
-    }
-}
-
-/// Generates a unique identifier based on the machine's configuration.
-pub trait MachineRng {
-    fn machine_rng(&self, distro_lock: bool) -> String;
-}
-
-/// Generates a unique identifier based on the machine's configuration.
-/// Heads up:
-/// If you're migrating from version 2.2 or used machine_rng with distribution lock enabled,
-/// make sure to decrypt your data before changing or reinstalling your OS.
-/// The OS distribution is a part of the key derivation process when distro_lock is set to true.
-/// Failing to do so may permanently prevent access to your encrypted data.
-impl MachineRng for str {
-    fn machine_rng(&self, distro_lock: bool) -> String {
-        let user_name = whoami::username();
-        let device_name = whoami::devicename();
-        let real_name = whoami::realname();
-
-        let mut data = Vec::new();
-        data.extend_from_slice(user_name.as_bytes());
-        data.extend_from_slice(device_name.as_bytes());
-        data.extend_from_slice(real_name.as_bytes());
-        if distro_lock == true {
-            let distro = whoami::distro();
-            data.extend_from_slice(distro.as_bytes());
-        }
-        data.extend_from_slice(self.as_bytes());
-
-        let mut hash = Sha3_256::new();
-        hash.update(&data);
-        let hash = hash.finalize();
-        hash.to_vec().as_base64()
-    }
-}
-
-/// ### Builder for CRYSTALYST
-/// - You can encrypte & decrypte data using the builder.
-pub struct CrystalystBuilder {
-    config: Option<Config>,
-    data: Option<Vec<u8>>,
-    password: Option<Vec<u8>>,
-    nonce: Option<NonceData>,
-    salt: Option<Salt>,
-    decryption_key: Option<String>,
-    utils: Option<Utils>,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct Utils {
-    benchmark: bool,
-    recovery_key: Option<bool>,
-    wrap_all: bool,
-}
-
-/// Generates a Unique Nonce
-/// # ⚠️ WARNING: YOU HAVE TO USE SUDO/ADMIN PRIVILEGES TO GENERATE A TPM NONCE.
-///
-/// ## Platform Requirements:
-/// - **Linux:** `sudo your_app` or run as root
-/// - **Windows:** Run as Administrator
-/// - **macOS:** `sudo your_app` (if TPM available)
-///
-/// ## Why Admin Access is Required:
-/// - Direct hardware access to TPM chip
-/// - Security isolation from unprivileged processes
-/// - Compliance with TPM security model
-///
-/// ## Fallback Strategy:
-/// ```rust
-/// let nonce = match Nonce::generate_nonce(None, NonceType::TPM(hardware, tpm)) {
-///     Ok(hw_nonce) => hw_nonce,
-///     Err(_) => {
-///         eprintln!("TPM access failed, falling back to software nonce");
-///         Nonce::generate_nonce(Some(rng), NonceType::Hashed)?
-///     }
-/// };
-/// ```
-pub struct Nonce;
-
-/// Nonce Types
-/// - Classic: Generates a random nonce.
-/// - Hashed: Generates a hashed nonce.
-/// - Tagged: Generates a tagged nonce.
-/// - Machine: Generates a machine-specific nonce.
-/// - TPM: Generates a nonce using a Trusted Platform Module.
-///
-/// # ⚠️ WARNING: YOU HAVE TO USE SUDO/ADMIN PRIVILEGES TO GENERATE A TPM NONCE.
-///
-/// ## Platform Requirements:
-/// - **Linux:** `sudo your_app` or run as root
-/// - **Windows:** Run as Administrator
-/// - **macOS:** `sudo your_app` (if TPM available)
-///
-/// ## Why Admin Access is Required:
-/// - Direct hardware access to TPM chip
-/// - Security isolation from unprivileged processes
-/// - Compliance with TPM security model
-///
-/// ## Fallback Strategy:
-/// ```rust
-/// let nonce = match Nonce::generate_nonce(None, NonceType::TPM(hardware, tpm)) {
-///     Ok(hw_nonce) => hw_nonce,
-///     Err(_) => {
-///         eprintln!("TPM access failed, falling back to software nonce");
-///         Nonce::generate_nonce(Some(rng), NonceType::Hashed)?
-///     }
-/// };
-/// ```
-pub enum NonceType {
-    Classic,
-    Hashed,
-    Tagged(String),
-    Machine,
-    Tpm(Hardware, TpmModule, tss_esapi::Context),
-}
-
-impl Nonce {
-    pub fn generate_nonce(rng: Option<RNG>, nonce_type: NonceType) -> Result<NonceData, Errors> {
-        match nonce_type {
-            NonceType::Classic => {
-                let rng = rng.ok_or(Errors::RngRequired)?;
-                Ok(Nonce::nonce(rng))
-            }
-            NonceType::Hashed => {
-                let rng = rng.ok_or(Errors::RngRequired)?;
-                Ok(Nonce::hashed_nonce(rng))
-            }
-            NonceType::Tagged(tag) => {
-                let rng = rng.ok_or(Errors::RngRequired)?;
-                Ok(Nonce::tagged_nonce(rng, &tag.as_bytes()))
-            }
-            NonceType::Machine => Ok(Nonce::machine_nonce(rng)),
-            NonceType::Tpm(hardware, mut manager, mut tpm) => {
-                Nonce::tpm_nonce(hardware, &mut manager, &mut tpm)
-            }
-        }
-    }
-
-    fn hashed_nonce(rng: RNG) -> NonceData {
-        let mut nonce = *rng.as_bytes();
-        let number: u8 = thread_rng().gen_range(0..255);
-
-        for i in 0..=number {
-            let mut mix = nonce.to_vec();
-            mix.push(i as u8);
-            let mut out = [0u8; 32];
-            let mut hash = Sha3_256::new();
-            hash.update(&mix);
-            out.copy_from_slice(hash.finalize().to_vec().as_slice());
-            nonce = out;
-        }
-
-        NonceData::HashedNonce(nonce)
-    }
-
-    fn tagged_nonce(rng: RNG, tag: &[u8]) -> NonceData {
-        let mut nonce = *rng.as_bytes();
-        let number: u8 = thread_rng().gen_range(0..255);
-
-        for i in 0..=number {
-            let mut mix = nonce.to_vec();
-            mix.push(i as u8);
-            let mut out = [0u8; 32];
-            let mut hash = Sha3_256::new();
-            hash.update(&mix);
-            out.copy_from_slice(hash.finalize().to_vec().as_slice());
-            nonce = out;
-        }
-
-        let mut output = [0u8; 32];
-        let mut hash = Sha3_256::new();
-        hash.update(nonce);
-        hash.update(tag);
-        let out = hash.finalize().to_vec();
-        output.copy_from_slice(&out);
-
-        NonceData::TaggedNonce(output) // Hash the nonce to get a 32 byte more random nonce (Extra Security)
-    }
-
-    fn machine_nonce(rng: Option<RNG>) -> NonceData {
-        let user_name = whoami::username();
-        let device_name = whoami::devicename();
-        let real_name = whoami::realname();
-        let distro = whoami::distro();
-
-        let mut all_data = Vec::new();
-
-        all_data.extend_from_slice(user_name.as_bytes());
-        all_data.extend_from_slice(device_name.as_bytes());
-        all_data.extend_from_slice(real_name.as_bytes());
-        all_data.extend_from_slice(distro.as_bytes());
-
-        if let Some(rng) = rng {
-            all_data.extend_from_slice(rng.as_bytes());
-        }
-
-        let mut out = [0u8; 32];
-        let mut hash = Sha3_256::new();
-        hash.update(&all_data);
-        let hash = hash.finalize().to_vec();
-        out.copy_from_slice(hash.as_slice());
-
-        NonceData::MachineNonce(out)
-    }
-
-    fn nonce(rng: RNG) -> NonceData {
-        let nonce = *rng.as_bytes();
-        let number: u8 = thread_rng().gen_range(0..255);
-
-        let new_nonce_vec = nonce
-            .iter()
-            .enumerate()
-            .map(|(i, b)| {
-                let add = (rng.as_bytes()[i % rng.as_bytes().len()] as usize) % (i + 1);
-                let add = add as u8;
-                b.wrapping_add(add.wrapping_add(number))
-            })
-            .collect::<Vec<u8>>();
-
-        let mut new_nonce = [0u8; 32];
-        new_nonce.copy_from_slice(&new_nonce_vec[..32]);
-
-        NonceData::Nonce(new_nonce)
-    }
-
-    fn tpm_nonce(
-        hardware: Hardware,
-        manager: &mut TpmModule,
-        tpm: &mut tss_esapi::Context,
-    ) -> Result<NonceData, Errors> {
-        manager.generate_nonce(tpm, hardware)
-    }
-}
-
 // -----------------------------------------------------
 
-/// Generator for a new salt
-/// - You can save this salt to a file or database, or you can add directly to encrypted data.
-///
-/// /// ⚠️ Warning:
-/// If you lose this salt, decryption will fail. Keep it safe like your password.
-#[derive(Debug, Copy, Clone)]
-pub enum Salt {
-    Salt([u8; 32]),
-}
-
-impl Salt {
-    /// Generate a new salt
-    /// Generates a new salt using a combination of random bytes from the thread and OS random number generators.
-    /// - You have to save this salt to a file or database, or you can add directly to encrypted data.
-    pub fn salt() -> Self {
-        let rng = *RNG::thread_rng().as_bytes();
-        let mix_rng = *RNG::osrng().as_bytes();
-        let hash_rng = vec![rng, mix_rng].concat();
-        let mut out = Vec::new();
-
-        for (i, b) in hash_rng.iter().enumerate() {
-            let b = *b;
-            let add = (mix_rng[i % mix_rng.len()] as usize) % (i + 1);
-            let add = add as u8;
-            let new_b = b.wrapping_add(add.wrapping_add(rng[i % rng.len()] % 8));
-            out.push(new_b);
-        }
-
-        let mut salt = [0u8; 32];
-        salt.copy_from_slice(&out[..32]);
-
-        Salt::Salt(salt)
-    }
-
-    pub fn tpm_salt(
-        hardware: Hardware,
-        manager: TpmModule,
-        tpm: &mut tss_esapi::Context,
-    ) -> Result<Self, Errors> {
-        let nonce = manager.generate_nonce(tpm, hardware)?.to_vec();
-        let mut salt = [0u8; 32];
-        salt.copy_from_slice(&nonce[..32]);
-        Ok(Salt::Salt(salt))
-    }
-
-    /// Returns the salt as a byte slice.
-    pub fn as_bytes(&self) -> &[u8] {
-        match self {
-            Salt::Salt(bytes) => bytes,
-        }
-    }
-
-    /// Returns the salt as a vector of bytes.
-    pub fn to_vec(&self) -> Vec<u8> {
-        self.as_bytes().to_vec()
-    }
-}
-
-/// Returns vector or byte slice as a salt data.
-/// You can use this to turn a vector or byte slice into a salt.
-pub trait AsSalt {
-    fn as_salt(&self) -> Salt;
-    fn as_salt_safe(&self) -> Result<Salt, String>;
-}
-
-impl AsSalt for &[u8] {
-    fn as_salt(&self) -> Salt {
-        assert!(self.len() == 32, "Salt input must be exactly 32 bytes");
-        let mut arr = [0u8; 32];
-        arr.copy_from_slice(&self[..32]);
-        Salt::Salt(arr)
-    }
-
-    fn as_salt_safe(&self) -> Result<Salt, String> {
-        if self.len() != 32 {
-            Err("Salt input must be exactly 32 bytes".to_string())
-        } else {
-            let mut arr = [0u8; 32];
-            arr.copy_from_slice(&self[..32]);
-            Ok(Salt::Salt(arr))
-        }
-    }
-}
-
-// -----------------------------------------------------
-
+#[cfg(feature = "key_derivation")]
 fn derive_password_key(
     pwd: &[u8],
     salt: &[u8],
@@ -1481,11 +1168,6 @@ fn derive_password_key(
     if (pwd.len() as u64).ct_lt(&needed_len).unwrap_u8() != 0 {
         return Err(Errors::Argon2Failed("Invalid Password".to_string()));
     }
-
-    let len = match config.key_length {
-        KeyLength::Key256 => 32,
-        KeyLength::Key512 => 64,
-    };
 
     let mut salt = salt.to_vec();
 
@@ -1499,7 +1181,7 @@ fn derive_password_key(
         Argon2Type::Argon2id => Argon2::new(Algorithm::Argon2id, Version::V0x13, Params::DEFAULT),
     };
 
-    let mut out = vec![0u8; len];
+    let mut out = vec![0u8; 64];
     argon
         .hash_password_into(pwd, &salt, &mut out)
         .map_err(|e| Errors::Argon2Failed(e.to_string()))?; // Hashing Password VIA Argon2
@@ -1834,620 +1516,4 @@ fn parse_recovery_key(input: &str, nonce: &[u8]) -> Result<Vec<u8>, Errors> {
         .for_each(|(i, b)| *b = b.wrapping_sub(nonce[i % nonce.len()]));
 
     Ok(key)
-}
-
-fn encrypt(
-    password: &[u8],
-    data: &mut [u8],
-    nonce: NonceData,
-    config: Config,
-    custom_salt: Option<Salt>,
-    wrap_all: bool,
-    recovery_key: Option<bool>,
-) -> Result<Vec<u8>, Errors> {
-    let key_len = match config.key_length {
-        KeyLength::Key256 => 16,
-        KeyLength::Key512 => 32,
-    };
-
-    let data_for_mac = data.to_vec();
-
-    if password.len().ct_ne(&0).unwrap_u8() != 1 {
-        return Err(Errors::EmptyPassword);
-    } else if (password.len() as u32).ct_lt(&key_len).unwrap_u8() == 1 {
-        return Err(Errors::PasswordTooShort(format!(
-            "Password must be at least {} characters for cryptographic strength.",
-            key_len
-        )));
-    }
-
-    let nonce = nonce.as_bytes();
-    let mut pwd = if config.key_derivation {
-        let pwd = derive_password_key(password, nonce, custom_salt, config, key_len as u64)?;
-        pwd
-    } else {
-        password.to_vec()
-    };
-
-    if let Some(recovery_key) = recovery_key {
-        if recovery_key == true {
-            println!("Recovery Key: {}", generate_recovery_key(&pwd, nonce));
-        }
-    }
-
-    let gf = Arc::new(GaloisField::new(config.gf_poly.value()));
-
-    let mut out_vec = Vec::new();
-
-    if wrap_all {
-        out_vec.extend(nonce);
-    }
-
-    {
-        let encrypted_version = rxa_encrypt(&pwd, &mut VERSION.to_vec(), config)?;
-        out_vec.extend(encrypted_version);
-    }
-
-    let mut key_mixed_data = rxa_encrypt(&pwd, data, config)?;
-
-    let mut sbox_data = s_bytes(&mut key_mixed_data, nonce, &pwd, config)?;
-    secure_zeroize(&mut key_mixed_data, &config);
-
-    let mut rxa_mix = rxa_encrypt(&pwd, &mut sbox_data, config)?;
-    secure_zeroize(&mut sbox_data, &config);
-
-    let mut gf_data = apply_gf(&mut rxa_mix, &config, &gf, nonce)?;
-    secure_zeroize(&mut rxa_mix, &config);
-
-    shift_rows(&mut gf_data, &config);
-
-    let mut shifted_data = dynamic_shift(&mut gf_data, nonce, &pwd, config)?;
-    secure_zeroize(&mut gf_data, &config);
-
-    let final_sbox_data = s_bytes(&mut shifted_data, nonce, &pwd, config)?;
-    secure_zeroize(&mut shifted_data, &config);
-
-    let mut crypted = Vec::new();
-    let mut round_data = final_sbox_data;
-
-    for i in 1..=config.rounds {
-        let slice_end = std::cmp::min(i * 32, pwd.len());
-        let round_key = match config.key_length {
-            KeyLength::Key256 => {
-                let mut hash = Sha3_256::new();
-                hash.update(&pwd[..slice_end]);
-                hash.finalize().to_vec()
-            }
-            KeyLength::Key512 => {
-                let mut hash = Sha3_512::new();
-                hash.update(&pwd[..slice_end]);
-                hash.finalize().to_vec()
-            }
-        };
-
-        let crypted_chunks = round_data
-            .par_chunks_mut(1024 * 1024)
-            .map(|data: &mut [u8]| {
-                let mut xor_data = rxa_encrypt(&round_key, data, config)?;
-
-                match config.multi_round_galois_field {
-                    true => apply_gf(&mut xor_data, &config, &gf, nonce),
-                    false => match i {
-                        1 => apply_gf(&mut xor_data, &config, &gf, nonce),
-                        _ => Ok(xor_data),
-                    },
-                }
-            })
-            .try_reduce_with(|mut acc, mut next| {
-                acc.append(&mut next);
-                Ok(acc)
-            })
-            .ok_or_else(|| Errors::ChunkError("Cannot reduce chunk".to_string()))??;
-
-        if i == config.rounds {
-            crypted.extend(crypted_chunks);
-        } else {
-            secure_zeroize(&mut round_data, &config);
-            round_data = crypted_chunks;
-        }
-    }
-
-    if config.ctr_layer && crypted.len() > 128 {
-        let mut iv = [0u8; 64];
-        iv.clone_from_slice(&crypted[0..64]);
-        ctr_encrypt(nonce, &mut crypted[64..], &iv);
-        shift_rows(&mut crypted[..64], &config);
-    }
-
-    let mut hash_data = Sha3_512::new();
-    hash_data.update(&crypted);
-    let mac_data_1 = hash_data.finalize().to_vec();
-    let meta_data = vec![0xac, 0x07, 0x13, 0x00];
-    let mut mac_data = Vec::from(data_for_mac);
-    mac_data.extend(&mac_data_1);
-    mac_data.extend(VERSION);
-    mac_data.extend(meta_data);
-    mac_data.extend(nonce);
-    let mac = calculate_hmac(&pwd, &mac_data)?;
-
-    secure_zeroize(&mut pwd, &config);
-
-    out_vec.extend(crypted);
-    out_vec.extend(mac);
-
-    if wrap_all {
-        if custom_salt.is_some() {
-            out_vec.extend(
-                custom_salt
-                    .ok_or(Errors::BuildFailed("Cannot Open Salt".to_string()))?
-                    .as_bytes(),
-            );
-        } else {
-            out_vec.extend(nonce);
-        }
-    }
-
-    Ok(out_vec)
-}
-
-// -----------------------------------------------------
-
-fn decrypt(
-    password: &[u8],
-    data: &[u8],
-    nonce: Option<NonceData>,
-    config: Config,
-    custom_salt: Option<Salt>,
-    wrap_all: bool,
-    recovery_key: Option<String>,
-) -> Result<Vec<u8>, Errors> {
-    let (nonce_data, custom_salt) = if let Some(nonce) = nonce {
-        (nonce, custom_salt)
-    } else {
-        let (_, custom_salt) = data.split_at(data.len() - 32);
-        let (nonce, _) = data.split_at(32);
-
-        (nonce.as_nonce(), Option::from(custom_salt.as_salt()))
-    };
-
-    let key_len = match config.key_length {
-        KeyLength::Key256 => 16,
-        KeyLength::Key512 => 32,
-    };
-
-    let nonce_byte = nonce_data.as_bytes();
-
-    let pwd = if config.key_derivation {
-        let pwd = derive_password_key(password, nonce_byte, custom_salt, config, key_len)?;
-
-        pwd
-    } else {
-        password.to_vec()
-    };
-
-    let mut pwd = if let Some(key) = recovery_key {
-        parse_recovery_key(&key, nonce_byte)?
-    } else {
-        pwd
-    };
-
-    if data.len() < 32 + VERSION.len() {
-        return Err(Errors::InvalidMac("Data is too short".to_string()));
-    }
-
-    let version_len = VERSION.len();
-    let mut wrapped = false;
-
-    let (rest, encrypted_version) = if nonce.is_some() && !wrap_all {
-        let (encrypted_version, rest) = data.split_at(version_len);
-
-        (rest, encrypted_version)
-    } else {
-        let (_, rest) = data.split_at(32);
-        let (encrypted_version, rest) = rest.split_at(version_len);
-
-        wrapped = true;
-        (rest, encrypted_version)
-    };
-
-    // Version verification
-    let mut encrypted_version = encrypted_version.to_vec();
-    let version = rxa_decrypt(&pwd, &mut encrypted_version, config)?;
-
-    if !version.starts_with(b"CRYSTALYST-version") {
-        secure_zeroize(&mut pwd, &config);
-        return Err(Errors::InvalidAlgorithm);
-    }
-
-    if version.starts_with(b"atom-version:0x7") {
-        secure_zeroize(&mut pwd, &config);
-        return Err(Errors::NotBackwardCompatible);
-    }
-
-    let (mut crypted, mac_key) = if version.starts_with(b"CRYSTALYST-version:0x8") && wrapped {
-        let (data_without_salt, _) = rest.split_at(rest.len() - 32);
-        let (crypted, mac_key) = data_without_salt.split_at(data_without_salt.len() - 64);
-        (crypted.to_vec(), mac_key.to_vec())
-    } else {
-        let (crypted, mac_key) = rest.split_at(rest.len() - 64);
-        (crypted.to_vec(), mac_key.to_vec())
-    };
-
-    let mut hash_data = Sha3_512::new();
-    hash_data.update(&crypted);
-    let mac_data_1 = hash_data.finalize().to_vec();
-
-    if config.ctr_layer && data.len() > 128 {
-        inverse_shift_rows(&mut crypted[..64], &config);
-        let mut iv = [0u8; 64];
-        iv.clone_from_slice(&crypted[0..64]);
-        ctr_decrypt(nonce_byte, &mut crypted[64..], &iv);
-    }
-
-    let mut round_data = crypted.clone();
-    let gf = Arc::new(GaloisField::new(config.gf_poly.value()));
-
-    for i in (1..=config.rounds).rev() {
-        let slice_end = std::cmp::min(i * 32, pwd.len());
-        let round_key = match config.key_length {
-            KeyLength::Key256 => {
-                let mut hash = Sha3_256::new();
-                hash.update(&pwd[..slice_end]);
-                hash.finalize().to_vec()
-            }
-            KeyLength::Key512 => {
-                let mut hash = Sha3_512::new();
-                hash.update(&pwd[..slice_end]);
-                hash.finalize().to_vec()
-            }
-        };
-
-        let decrypted: Vec<u8> = round_data
-            .par_chunks_mut(1024 * 1024)
-            .map(|data: &mut [u8]| {
-                let mut gf_reversed = match config.multi_round_galois_field {
-                    true => apply_gf(data, &config, &gf, nonce_byte)?,
-                    false => match i {
-                        1 => apply_gf(data, &config, &gf, nonce_byte)?,
-                        _ => data.to_vec(),
-                    },
-                };
-
-                rxa_decrypt(&round_key, &mut gf_reversed, config)
-                    .map_err(|e| Errors::InvalidXor(e.to_string()))
-            })
-            .try_reduce_with(|mut acc, mut next| {
-                acc.append(&mut next);
-                Ok(acc)
-            })
-            .ok_or_else(|| Errors::ChunkError("Cannot reduce chunk".to_string()))??;
-
-        round_data = decrypted;
-    }
-
-    let mut pre_sbox_data = in_s_bytes(&mut round_data, nonce_byte, &pwd, config)?;
-    secure_zeroize(&mut round_data, &config);
-
-    let mut unshifted_data = dynamic_unshift(&mut pre_sbox_data, nonce_byte, &pwd, config)?;
-    secure_zeroize(&mut pre_sbox_data, &config);
-
-    inverse_shift_rows(&mut unshifted_data, &config);
-
-    let mut ungf_data = apply_gf(&mut unshifted_data, &config, &gf, nonce_byte)?;
-    secure_zeroize(&mut unshifted_data, &config);
-
-    let mut rxa_unmixed = rxa_decrypt(&pwd, &mut ungf_data, config)?;
-    secure_zeroize(&mut ungf_data, &config);
-
-    let mut unsbox_data = in_s_bytes(&mut rxa_unmixed, nonce_byte, &pwd, config)?;
-    secure_zeroize(&mut rxa_unmixed, &config);
-
-    let mut decrypted_data = rxa_decrypt(&pwd, &mut unsbox_data, config)?;
-    secure_zeroize(&mut unsbox_data, &config);
-
-    let metdata = vec![0xac, 0x07, 0x13, 0x00];
-    let mut mac_data = Vec::from(decrypted_data.clone());
-    mac_data.extend(mac_data_1);
-    mac_data.extend(version);
-    mac_data.extend(metdata);
-    mac_data.extend(nonce_byte);
-    let mut mac = calculate_hmac(&pwd, &mac_data)?;
-
-    if mac.ct_eq(&mac_key).unwrap_u8() != 1 {
-        secure_zeroize(&mut decrypted_data, &config);
-        secure_zeroize(&mut mac, &config);
-        secure_zeroize(&mut mac_data, &config);
-        return Err(Errors::InvalidMac("Invalid authentication".to_string()));
-    }
-
-    secure_zeroize(&mut mac_data, &config);
-
-    Ok(decrypted_data)
-}
-
-// -----------------------------------------------------
-
-pub trait AsBase {
-    fn as_base64(&self) -> String;
-    fn as_string(&self) -> String;
-}
-
-impl AsBase for Vec<u8> {
-    fn as_base64(&self) -> String {
-        BASE64_STANDARD.encode(self)
-    }
-
-    fn as_string(&self) -> String {
-        String::from_utf8_lossy(self).to_string()
-    }
-}
-
-impl Utils {
-    pub fn new() -> Self {
-        Self {
-            recovery_key: None,
-            benchmark: false,
-            wrap_all: false,
-        }
-    }
-
-    pub fn benchmark(mut self, benchmark: bool) -> Self {
-        self.benchmark = benchmark;
-        self
-    }
-
-    pub fn recovery_key(mut self, recovery_key: bool) -> Self {
-        self.recovery_key = Some(recovery_key);
-        self
-    }
-
-    pub fn wrap_all(mut self, wrap_all: bool) -> Self {
-        self.wrap_all = wrap_all;
-        self
-    }
-}
-
-impl CrystalystBuilder {
-    /// Creates a new instance of CrystalystBuilder.
-    pub fn new() -> Self {
-        Self {
-            password: None,
-            data: None,
-            config: None,
-            nonce: None,
-            salt: None,
-            decryption_key: None,
-            utils: None,
-        }
-    }
-
-    /// Sets the data to be encrypted.
-    /// -  Recommended using '&' when using `Vector<u8>`.
-    pub fn data(mut self, data: &[u8]) -> Self {
-        self.data = Some(data.to_vec());
-        self
-    }
-
-    /// Sets the configuration for the encryption.
-    pub fn config(mut self, config: Config) -> Self {
-        self.config = Some(config);
-        self
-    }
-
-    /// Sets the password for the encryption.
-    pub fn password(mut self, password: &[u8]) -> Self {
-        self.password = Some(password.to_vec());
-        self
-    }
-
-    /// Sets the nonce for the encryption.
-    pub fn nonce(mut self, nonce: NonceData) -> Self {
-        self.nonce = Some(nonce);
-        self
-    }
-
-    /// Sets the salt for the encryption.
-    pub fn salt(mut self, salt: Salt) -> Self {
-        self.salt = Some(salt);
-        self
-    }
-
-    /// Sets the recovery decryption key for the decryption.
-    pub fn decrypt_from_recovery_key(mut self, decryption_key: String) -> Self {
-        self.decryption_key = Some(decryption_key);
-        self
-    }
-
-    pub fn utils(mut self, utils: Utils) -> Self {
-        self.utils = Some(utils);
-        self
-    }
-
-    /// Encrypts the data using the provided configuration, password, and nonce.
-    /// - Recommended using at the end of build.
-    ///
-    /// # Errors
-    /// Returns an error if any of the required fields are missing.
-    ///
-    /// # Recommendations
-    /// - Use a strong password.
-    /// - Use a unique nonce for each encryption.
-    pub fn encrypt(self) -> Result<Vec<u8>, Errors> {
-        let config = self
-            .config
-            .ok_or_else(|| Errors::BuildFailed("Missing Config".to_string()))?;
-        let mut data = self
-            .data
-            .ok_or_else(|| Errors::BuildFailed("Missing Data".to_string()))?;
-        let password = self
-            .password
-            .ok_or_else(|| Errors::BuildFailed("Missing Password".to_string()))?;
-        let nonce = self
-            .nonce
-            .ok_or_else(|| Errors::BuildFailed("Missing Nonce".to_string()))?;
-        let salt = self.salt;
-        let (recovery_key, benchmark, wrap_all) = if let Some(utils) = self.utils {
-            (utils.recovery_key, utils.benchmark, utils.wrap_all)
-        } else {
-            (None, false, false)
-        };
-
-        if benchmark {
-            let start = Instant::now();
-            let out = encrypt(
-                &password,
-                &mut data,
-                nonce,
-                config,
-                salt,
-                wrap_all,
-                recovery_key,
-            )?;
-            let duration = start.elapsed();
-            println!("Encryption took {}ms", duration.as_millis());
-            Ok(out)
-        } else {
-            encrypt(
-                &password,
-                &mut data,
-                nonce,
-                config,
-                salt,
-                wrap_all,
-                recovery_key,
-            )
-        }
-    }
-
-    /// Decrypts the data using the provided configuration, password, and nonce.
-    /// - Recommended using at the end of build.
-    /// - Recommended not using with encryption in same builder.
-    ///
-    /// # Errors
-    /// Returns an error if any of the required fields are missing.
-    ///
-    /// # Recommendations
-    /// - Renew the nonce after each decryption.
-    pub fn decrypt(self) -> Result<Vec<u8>, Errors> {
-        let config = self
-            .config
-            .ok_or_else(|| Errors::BuildFailed("Missing Config".to_string()))?;
-        let data = self
-            .data
-            .ok_or_else(|| Errors::BuildFailed("Missing Data".to_string()))?;
-        let password = self
-            .password
-            .ok_or_else(|| Errors::BuildFailed("Missing Password".to_string()))?;
-        let nonce = self.nonce;
-        let salt = self.salt;
-        let recovery_key = self.decryption_key;
-        let (benchmark, wrap_all) = if let Some(utils) = self.utils {
-            (utils.benchmark, utils.wrap_all)
-        } else {
-            (false, false)
-        };
-
-        if benchmark {
-            let start = Instant::now();
-            let out = decrypt(
-                &password,
-                &data,
-                nonce,
-                config,
-                salt,
-                wrap_all,
-                recovery_key,
-            );
-            let duration = start.elapsed();
-            println!("Decryption took {}ms", duration.as_millis());
-            out
-        } else {
-            decrypt(
-                &password,
-                &data,
-                nonce,
-                config,
-                salt,
-                wrap_all,
-                recovery_key,
-            )
-        }
-    }
-}
-
-/// Test suite for Shannon entropy etc.
-pub struct Calculate;
-
-impl Calculate {
-    pub fn calculate_entropy(data: &[u8]) -> f64 {
-        if data.is_empty() {
-            return 0.0;
-        }
-
-        let mut frequency = [0usize; 256];
-        for &byte in data {
-            frequency[byte as usize] += 1;
-        }
-
-        let len = data.len() as f64;
-        frequency
-            .iter()
-            .filter(|&&count| count > 0)
-            .map(|&count| {
-                let p = count as f64 / len;
-                -p * p.log2()
-            })
-            .sum()
-    }
-
-    pub fn calculate_bit_balance(data: &[u8]) -> (usize, usize, f64) {
-        let mut ones = 0;
-        let mut zeros = 0;
-
-        for byte in data {
-            ones += byte.count_ones() as usize;
-            zeros += byte.count_zeros() as usize;
-        }
-
-        let total_bits = ones + zeros;
-        let balance = (ones as f64 / total_bits as f64) * 100.0;
-
-        (ones, zeros, balance)
-    }
-
-    pub fn calculate_avalanche(data1: &[u8], data2: &[u8]) -> Result<f64, Errors> {
-        if data1.len() != data2.len() {
-            return Err(Errors::DataError("Data sizes do not match".to_string()));
-        }
-
-        let mut changed_bits = 0;
-        let total_bits = data1.len() * 8;
-
-        for (byte1, byte2) in data1.iter().zip(data2.iter()) {
-            let xor_result = byte1 ^ byte2;
-            changed_bits += xor_result.count_ones() as usize;
-        }
-
-        Ok((changed_bits as f64 / total_bits as f64) * 100.0)
-    }
-
-    pub fn calculate_byte_difference(data1: &[u8], data2: &[u8]) -> f64 {
-        let min_len = usize::min(data1.len(), data2.len());
-        let max_len = usize::max(data1.len(), data2.len());
-
-        let diff = data1
-            .iter()
-            .zip(data2.iter())
-            .take(min_len)
-            .filter(|(a, b)| a != b)
-            .count();
-        ((diff + (max_len - min_len)) as f64 / max_len as f64) * 100.0
-    }
-
-    pub fn generate_random_data(size: usize) -> Vec<u8> {
-        let mut rng = rand::thread_rng();
-        let mut out = vec![0u8; size];
-        rng.fill_bytes(&mut out);
-        out
-    }
 }

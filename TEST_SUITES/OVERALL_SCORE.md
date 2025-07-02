@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-**Algorithm:** CRYSTALYST
+**Algorithm:** CRYSTALYST 0.8.0
 
 **Test Data:** 50MB (400,000,640 bits)
 

@@ -1,6 +1,6 @@
 [package]
 name = "crystalyst-rs"
-version = "0.8.3"
+version = "0.8.5"
 edition = "2024"
 description = "A modern, flexible and 'EXPERIMENTAL' cryptographic library for Rust"
 license = "MIT"
@@ -15,32 +15,52 @@ categories = [
 ]
 exclude = ["TEST_SUITES/output.bin"]
 
+[package.metadata.docs.rs]
+features = ["all_features"]
+all-features = true
+
+[features]
+default = ["key_derivation"]
+key_derivation = ["argon2"]
+kyber = ["pqc_kyber"]
+machine_rng = ["whoami"]
+base_coding = ["base64"]
+kyber_shared = ["base_coding", "kyber"]
+all_features = ["key_derivation", "machine_rng", "kyber_shared"]
+
 [dependencies]
+secrecy = "0.10.3"
 rand = "=0.8.5"
 rand_core = { version = "=0.6.4", features = ["std"] }
 rayon = "1"
 subtle = "2.6"
 thiserror = "2.0"
-num_cpus = "1"
-argon2 = "0.5"
+argon2 = { version = "0.5", optional = true }
 zeroize = "1.8"
-whoami = "1.6"
+whoami = { version = "1.6", optional = true }
 sha3 = "0.10"
-base64 = "0.22"
+base64 = { version = "0.22.1", optional = true }
 hmac = "0.12"
 sysinfo = "0.35.2"
-bytemuck = "1.23"
 tss-esapi = "7.6.0"
-secrecy = "0.10.3"
-pqc_kyber = { version = "0.7.1", features = ["kyber512", "std", "zeroize"] }
+pqc_kyber = { version = "0.7.1", features = [
+    "kyber512",
+    "std",
+    "zeroize",
+], optional = true }
+dashmap = "6.1.0"
+
+[dev-dependencies]
+x86 = "0.52"
 
 [profile.release]
 opt-level = 3
-lto = "fat"
+# lto = "fat"
 codegen-units = 1
+debug = true
 
 [profile.dev]
 opt-level = 3
-lto = "fat"
+# lto = "fat"
 codegen-units = 1
 debug = true
