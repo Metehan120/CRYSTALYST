@@ -49,8 +49,6 @@ core::ptr::read_volatile(&...);
 - Production environments naturally benefit from cache warming
 - Benchmarks exclude cold start for representative performance metrics
 
-## ⚠️ Tested On Lookup Tables
-
 ## New Major Feature, Stream Cipher:
 CRYSTALYST v0.8.5 introduces a streaming cipher implementation that fundamentally changes how encryption is performed. Unlike traditional block ciphers that process entire datasets in memory, the stream cipher processes data in intelligent chunks, delivering superior performance while maintaining the same cryptographic security guarantees.
 
