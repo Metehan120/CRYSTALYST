@@ -1,5 +1,5 @@
 use rayon::prelude::*;
-use std::arch::x86_64::*;
+use std::{arch::x86_64::*, hint::black_box};
 
 use crate::{
     Config,
@@ -17,12 +17,12 @@ pub unsafe fn avx2_xor_inplace(data: &mut [u8], key: &CacheWarmup64, config: &Co
 
         match key_start + 32 <= 64 {
             true => {
-                key_block.copy_from_slice(&key.key[key_start..key_start + 32]);
+                black_box(key_block.copy_from_slice(&key.key[key_start..key_start + 32]));
             }
             false => {
                 let first_part = 64 - key_start;
-                key_block[..first_part].copy_from_slice(&key.key[key_start..]);
-                key_block[first_part..].copy_from_slice(&key.key[..32 - first_part]);
+                black_box(key_block[..first_part].copy_from_slice(&key.key[key_start..]));
+                black_box(key_block[first_part..].copy_from_slice(&key.key[..32 - first_part]));
             }
         };
 
@@ -54,12 +54,12 @@ pub unsafe fn avx2_add_inplace(data: &mut [u8], key: &CacheWarmup64, config: &Co
 
         match key_start + 32 <= 64 {
             true => {
-                key_block.copy_from_slice(&key.key[key_start..key_start + 32]);
+                black_box(key_block.copy_from_slice(&key.key[key_start..key_start + 32]));
             }
             false => {
                 let first_part = 64 - key_start;
-                key_block[..first_part].copy_from_slice(&key.key[key_start..]);
-                key_block[first_part..].copy_from_slice(&key.key[..32 - first_part]);
+                black_box(key_block[..first_part].copy_from_slice(&key.key[key_start..]));
+                black_box(key_block[first_part..].copy_from_slice(&key.key[..32 - first_part]));
             }
         };
 
@@ -92,12 +92,12 @@ pub unsafe fn avx2_sub_inplace(data: &mut [u8], key: &CacheWarmup64, config: &Co
 
         match key_start + 32 <= 64 {
             true => {
-                key_block.copy_from_slice(&key.key[key_start..key_start + 32]);
+                black_box(key_block.copy_from_slice(&key.key[key_start..key_start + 32]));
             }
             false => {
                 let first_part = 64 - key_start;
-                key_block[..first_part].copy_from_slice(&key.key[key_start..]);
-                key_block[first_part..].copy_from_slice(&key.key[..32 - first_part]);
+                black_box(key_block[..first_part].copy_from_slice(&key.key[key_start..]));
+                black_box(key_block[first_part..].copy_from_slice(&key.key[..32 - first_part]));
             }
         };
 
