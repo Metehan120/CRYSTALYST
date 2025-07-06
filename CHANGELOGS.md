@@ -3,52 +3,6 @@
 ## Overview
 CRYSTALYST is a cutting-edge cryptographic library designed to provide high security for your applications. This release introduces several new features and enhancements that significantly improve the security and performance of your cryptographic operations.
 
-## Hardware-Level Constant-Time Cryptography
-CRYSTALYST v0.8.5 introduces an innovative cache warmup strategy that achieves **hardware-verified constant-time execution** at the CPU cycle level. This breakthrough eliminates timing variability and provides mathematically provable performance consistency for security-critical applications.
-
-> Not %100 guaranteed, but close enough.
-
-## Measurement Method:
-- Used RDSTC for measurement (Measured through cycles), and verified through multiple runs and statistical analysis. The results were consistent across multiple runs.
-- **Production Testing**: 100-10-1MB datasets on consumer hardware (Ryzen 5 3600)
-
-## Real-World Performance Characteristics:
-My constant-time implementation demonstrates exceptional consistency in production environments. Testing with 100MB datasets shows:
-### Cold Performance:
-- Tested on Ryzen 5 3600
-- Timing range: 3017ms - 3143ms (~4.2% variance)
-- Cycle range: 10,864,847,268 - 11,317,351,284 cycles
-- Cycle efficiency: ~108-113 cycles per byte
-- Throughput: ~32-33 MB/s
-### Warmed-Up Performance:
-- Tested on Ryzen 5 3600
-- Timing range: 3030ms - 3093ms (~2.1% variance)
-- Cycle range: 10,908,613,404 - 11,136,373,560 cycles
-- Cycle efficiency: ~109-111 cycles per byte
-- Throughput: ~32-33 MB/s
-### Multi-Core Timing Challenges:
-While our cache warmup strategy provides excellent single-threaded constant-time guarantees, multi-core environments introduce unavoidable timing variabilities due to cache coherency protocols, NUMA effects, and inter-core communication. For maximum security guarantees, CRYSTALYST automatically falls back to single-threaded execution in security-critical configurations (FORTRESS, EXTREME, MAX, CT_*).
-### SIMD Safety:
-Our AVX2 implementations maintain constant-time properties. Modern SIMD instructions provide data-independent timing characteristics, making them ideal for cryptographic workloads without compromising security, but still **SINGLE THREAD RECOMMENDED**.
-### Implementation:
-```rust
-// x86_64: Direct hardware prefetch instructions
-_mm_prefetch(... as *const i8, _MM_HINT_T0);
-
-// ARM/Others: Volatile memory access fallback
-core::ptr::read_volatile(&...);
-```
-### Performance Improvements:
-- 1-Cycle Cache Loading: Hardware prefetch instructions for optimal performance
-- Cross-Platform Compatibility: Intelligent fallback for non-x86 architectures
-- Timing Consistency: ~Sub-3-5% variance in production environments
-- Cache Hit Optimization: 98%+ cache hit rates for cryptographic lookup tables
-### Performance Notes
-- CT_* profiles will have cold start penalty due to cache warmup strategy
-- After initial warmup, performance stabilizes to optimal levels
-- Production environments naturally benefit from cache warming
-- Benchmarks exclude cold start for representative performance metrics
-
 ## New Major Feature, Stream Cipher:
 CRYSTALYST v0.8.5 introduces a streaming cipher implementation that fundamentally changes how encryption is performed. Unlike traditional block ciphers that process entire datasets in memory, the stream cipher processes data in intelligent chunks, delivering superior performance while maintaining the same cryptographic security guarantees.
 
