@@ -104,6 +104,16 @@ impl CacheWarmup for CacheWarmup64 {
     }
 
     #[inline(always)]
+    fn pre_sbox_warmup(&self) {
+        unsafe {
+            for i in (0..256).step_by(128) {
+                core::ptr::read_volatile(&self.sbox[i]);
+                core::ptr::read_volatile(&self.inv_sbox[i]);
+            }
+        }
+    }
+
+    #[inline(always)]
     fn cache_time_lookup(&self, value: u8) -> u8 {
         black_box(self.sbox[value as usize])
     }
