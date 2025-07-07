@@ -93,16 +93,6 @@ impl CacheWarmup for CacheWarmup64 {
 impl CacheWarmup for CacheWarmup64 {
     #[inline(always)]
     fn warm_cache(&self) {
-        let _ = self.key[0];
-
-        for i in (0..256).step_by(128) {
-            let _ = self.sbox[i];
-            let _ = self.inv_sbox[i];
-        }
-    }
-
-    #[inline(always)]
-    fn warm_cache(&self) {
         unsafe {
             core::ptr::read_volatile(&self.key[0]);
 
