@@ -1,4 +1,4 @@
-# CRYSTALYST Threat Model (v0.9.0)
+# CRYSTALYST Threat Model (v0.8.5)
 
 ## Purpose
 
