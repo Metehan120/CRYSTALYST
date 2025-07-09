@@ -13,7 +13,7 @@ pub unsafe fn avx2_xor_inplace(data: &mut [u8], key: &CacheWarmup64, config: &Co
 
     chunks.enumerate().for_each(|(chunk_index, chunk)| {
         let mut key_block = [0u8; 32];
-        let key_start = (chunk_index * 32) % 64;
+        let key_start = (chunk_index * 32) & 63;
 
         match key_start + 32 <= 64 {
             true => {
@@ -33,11 +33,20 @@ pub unsafe fn avx2_xor_inplace(data: &mut [u8], key: &CacheWarmup64, config: &Co
 
             _mm256_storeu_si256(chunk.as_mut_ptr() as *mut __m256i, xor_vec);
         }
+
+        unsafe {
+            let next_key_start = (key_start + 32) & 63;
+
+            _mm_prefetch(
+                &key.key[next_key_start] as *const u8 as *const i8,
+                _MM_HINT_T0,
+            )
+        };
     });
 
     if remainder_len != 0 {
         let start = data.len() - remainder_len;
-        data[start..].par_iter_mut().enumerate().for_each(|(i, b)| {
+        data[start..].iter_mut().enumerate().for_each(|(i, b)| {
             *b ^= key_lookup(key, (start + i) as u8, config);
         });
     }
@@ -50,7 +59,7 @@ pub unsafe fn avx2_add_inplace(data: &mut [u8], key: &CacheWarmup64, config: &Co
 
     chunks.enumerate().for_each(|(chunk_index, chunk)| {
         let mut key_block = [0u8; 32];
-        let key_start = (chunk_index * 32) % 64;
+        let key_start = (chunk_index * 32) & 63;
 
         match key_start + 32 <= 64 {
             true => {
@@ -70,12 +79,21 @@ pub unsafe fn avx2_add_inplace(data: &mut [u8], key: &CacheWarmup64, config: &Co
 
             _mm256_storeu_si256(chunk.as_mut_ptr() as *mut __m256i, add_vec);
         }
+
+        unsafe {
+            let next_key_start = (key_start + 32) & 63;
+
+            _mm_prefetch(
+                &key.key[next_key_start] as *const u8 as *const i8,
+                _MM_HINT_T0,
+            )
+        };
     });
 
     if remainder_len != 0 {
         let start = data.len() - remainder_len;
         data[start..]
-            .par_iter_mut()
+            .iter_mut()
             .enumerate()
             .for_each(|(i, b)| *b = b.wrapping_add(key_lookup(key, (start + i) as u8, config)));
     }
@@ -88,7 +106,7 @@ pub unsafe fn avx2_sub_inplace(data: &mut [u8], key: &CacheWarmup64, config: &Co
 
     chunks.enumerate().for_each(|(chunk_index, chunk)| {
         let mut key_block = [0u8; 32];
-        let key_start = (chunk_index * 32) % 64;
+        let key_start = (chunk_index * 32) & 63;
 
         match key_start + 32 <= 64 {
             true => {
@@ -108,12 +126,21 @@ pub unsafe fn avx2_sub_inplace(data: &mut [u8], key: &CacheWarmup64, config: &Co
 
             _mm256_storeu_si256(chunk.as_mut_ptr() as *mut __m256i, sub_vec);
         }
+
+        unsafe {
+            let next_key_start = (key_start + 32) & 63;
+
+            _mm_prefetch(
+                &key.key[next_key_start] as *const u8 as *const i8,
+                _MM_HINT_T0,
+            )
+        };
     });
 
     if remainder_len != 0 {
         let start = data.len() - remainder_len;
         data[start..]
-            .par_iter_mut()
+            .iter_mut()
             .enumerate()
             .for_each(|(i, b)| *b = b.wrapping_sub(key_lookup(key, (start + i) as u8, config)));
     }

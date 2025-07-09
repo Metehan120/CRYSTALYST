@@ -10,7 +10,13 @@ use rand::Rng;
 use rayon::{ThreadPool, prelude::*};
 use secrecy::{ExposeSecret, SecretBox};
 use sha3::{Digest, Sha3_512};
-use std::{hint::black_box, sync::OnceLock, thread, time::Duration};
+use std::{
+    arch::x86_64::{__m128i, _mm_loadu_si128, _mm_set_epi8, _mm_shuffle_epi8, _mm_storeu_si128},
+    hint::black_box,
+    sync::OnceLock,
+    thread,
+    time::Duration,
+};
 use subtle::{ConditionallySelectable, ConstantTimeEq};
 use tss_esapi::structures::MaxBuffer;
 use zeroize::Zeroize;
@@ -26,7 +32,9 @@ impl Drop for KeyBuffer {
     }
 }
 
-pub const ROTATIONS: [u32; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
+pub const RATIO: u64 = 0x9E3779B97F4A7C15;
+pub const ROTATIONS: [u32; 10] = [8, 2, 3, 1, 4, 5, 12, 9, 11, 4];
+pub const POS_DEPENT: [u32; 10] = [1, 8, 3, 1, 8, 3, 1, 9, 1, 4];
 static THREAD_POOL: OnceLock<ThreadPool> = OnceLock::new();
 static KEY_CACHE_MAP: OnceLock<DashMap<KeyBuffer, SecretKey>> = OnceLock::new();
 
@@ -213,7 +221,7 @@ fn parallel_add_inplace(data: &mut [u8], key: &CacheWarmup64, pool: &ThreadPool,
 
         chunks.enumerate().for_each(|(chunk_index, chunk)| {
             for (i, byte) in chunk.iter_mut().enumerate() {
-                let global_pos = ((chunk_index * 32 + i) % 64) as u8;
+                let global_pos = ((chunk_index * 32 + i) & 63) as u8;
                 *byte = byte.wrapping_add(key_lookup(key, global_pos, config));
             }
         });
@@ -299,7 +307,7 @@ pub fn constant_time_key_lookup(key: &[u8], value: u8) -> u8 {
     result
 }
 
-#[inline]
+#[inline(always)]
 pub fn key_lookup(key: &CacheWarmup64, value: u8, config: &Config) -> u8 {
     match config.subtle_key_lookup {
         true => constant_time_key_lookup(&key.key, value),
@@ -312,7 +320,7 @@ pub fn generate_counter_keystream(nonce: u64, block_counter: u64, chunk_idx: usi
     let unique_counter = nonce
         .wrapping_add(block_counter)
         .wrapping_add(chunk_idx as u64)
-        .wrapping_mul(0x9E3779B97F4A7C15);
+        .wrapping_mul(RATIO);
 
     let bytes = unique_counter.to_le_bytes();
     [
@@ -376,7 +384,7 @@ pub fn generate_counter_keystream_aes(nonce: u64, block_counter: u64, chunk_idx:
     let unique_counter = nonce
         .wrapping_add(block_counter)
         .wrapping_add(chunk_idx as u64)
-        .wrapping_mul(0x9E3779B97F4A7C15);
+        .wrapping_mul(RATIO);
 
     let bytes = unique_counter.to_le_bytes();
     [
@@ -457,35 +465,53 @@ pub fn apply_gf(
 pub fn inverse_shift_rows(data: &mut [u8], config: &Config) {
     let pool = get_thread_pool(config.thread_strategy.get_cpu_count(), config.stack_size);
 
-    pool.install(|| {
-        data.par_chunks_exact_mut(16).for_each(|chunk| {
-            chunk.swap(11, 7);
-            chunk.swap(15, 11);
-            chunk.swap(3, 15);
-            chunk.swap(6, 14);
-            chunk.swap(2, 10);
-            chunk.swap(9, 13);
-            chunk.swap(5, 9);
-            chunk.swap(1, 5);
+    if is_x86_feature_detected!("avx2") && config.hardware.enable_avx2 {
+        data.par_chunks_exact_mut(16).for_each(|chunk| unsafe {
+            let mask = _mm_set_epi8(15, 2, 5, 8, 11, 14, 1, 4, 7, 10, 13, 0, 3, 6, 9, 12);
+            let shuffled =
+                _mm_shuffle_epi8(_mm_loadu_si128(chunk.as_ptr() as *const __m128i), mask);
+            _mm_storeu_si128(chunk.as_mut_ptr() as *mut __m128i, shuffled);
         });
-    })
+    } else {
+        pool.install(|| {
+            data.par_chunks_exact_mut(16).for_each(|chunk| {
+                chunk.swap(11, 7);
+                chunk.swap(15, 11);
+                chunk.swap(3, 15);
+                chunk.swap(6, 14);
+                chunk.swap(2, 10);
+                chunk.swap(9, 13);
+                chunk.swap(5, 9);
+                chunk.swap(1, 5);
+            });
+        })
+    }
 }
 
 pub fn shift_rows(data: &mut [u8], config: &Config) {
     let pool = get_thread_pool(config.thread_strategy.get_cpu_count(), config.stack_size);
 
-    pool.install(|| {
-        data.par_chunks_exact_mut(16).for_each(|chunk| {
-            chunk.swap(1, 5);
-            chunk.swap(5, 9);
-            chunk.swap(9, 13);
-            chunk.swap(2, 10);
-            chunk.swap(6, 14);
-            chunk.swap(3, 15);
-            chunk.swap(15, 11);
-            chunk.swap(11, 7);
+    if is_x86_feature_detected!("avx2") && config.hardware.enable_avx2 {
+        data.par_chunks_exact_mut(16).for_each(|chunk| unsafe {
+            let mask = _mm_set_epi8(11, 6, 1, 12, 7, 2, 13, 8, 3, 14, 9, 4, 15, 10, 5, 0);
+            let shuffled =
+                _mm_shuffle_epi8(_mm_loadu_si128(chunk.as_ptr() as *const __m128i), mask);
+            _mm_storeu_si128(chunk.as_mut_ptr() as *mut __m128i, shuffled);
         });
-    });
+    } else {
+        pool.install(|| {
+            data.par_chunks_exact_mut(16).for_each(|chunk| {
+                chunk.swap(1, 5);
+                chunk.swap(5, 9);
+                chunk.swap(9, 13);
+                chunk.swap(2, 10);
+                chunk.swap(6, 14);
+                chunk.swap(3, 15);
+                chunk.swap(15, 11);
+                chunk.swap(11, 7);
+            });
+        });
+    }
 }
 
 pub fn rxa_encrypt(pwd: &CacheWarmup64, input: &mut [u8], config: Config) -> Result<(), Errors> {
@@ -567,14 +593,18 @@ pub fn generate_dynamic_sbox(nonce: &[u8], key: &[u8], cfg: Config) -> Result<[u
     let mut seed = seed_base.iter().map(|b| *b as u32).collect::<Vec<u32>>();
 
     seed.iter_mut().enumerate().for_each(|(i, byte)| {
-        *byte ^= (i as u64 + 1).wrapping_mul(0x9E3779B97F4A7C15) as u32;
+        *byte ^= (i as u64 + 1).wrapping_mul(RATIO) as u32;
     });
 
     for i in (1..256).rev() {
-        let index = (black_box(seed[i % seed.len()]) as usize
-            + black_box(seed[(i * 7) % seed.len()]) as usize)
-            % (i + 1); // Generate a random index
-        sbox.swap(i, index); // Swap the values in the sbox
+        let pos_factor = POS_DEPENT[i % 10];
+
+        let seed1_enhanced = (black_box(seed[i % seed.len()]) as u32).wrapping_mul(pos_factor);
+        let seed2_enhanced = (black_box(seed[(i * 7) % seed.len()]) as u32)
+            .wrapping_mul(pos_factor.wrapping_add(i as u32));
+
+        let index = (seed1_enhanced.wrapping_add(seed2_enhanced) as usize) % (i + 1);
+        sbox.swap(i, index);
     }
 
     Ok(sbox)
@@ -624,7 +654,7 @@ pub fn generate_keystream_32(nonce: &[u8], block_counter: u64, chunk_idx: usize)
             .wrapping_add(block_counter)
             .wrapping_add(chunk_idx as u64)
             .wrapping_add(i as u64)
-            .wrapping_mul(0x9E3779B97F4A7C15);
+            .wrapping_mul(RATIO);
 
         keystream[i] = unique_counter as u8;
     }
